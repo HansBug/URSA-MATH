@@ -127,19 +127,270 @@ URSA (Understanding and Verifying Chain-of-thought Reasoning in Multimodal Mathe
 - **MMathCoT-1M**: 高质量大规模多模态CoT推理数据集
 - **DualMath-1.1M**: 双视角过程监督数据集
 
-### 三阶段训练框架
+### 三阶段训练框架详解
 
-1. **Stage I**: 视觉-语言对齐和数学指令微调
-   - 使用URSA-Alignment-860K进行视觉-语言对齐
-   - 使用MMathCoT-1M进行指令微调
+#### Stage I: 视觉-语言对齐和数学指令微调
 
-2. **Stage II**: 过程奖励模型训练
-   - 基于URSA-8B继续训练
-   - 使用DualMath-1.1M数据集，包含逻辑正确性和视觉一致性的双视角监督
+**训练数据**:
+- **对齐阶段**: URSA-Alignment-860K
+  - 来源: Multimath、MAVIS、Geo170K等开源数据集
+  - 包含图像-文本对和详细描述
+- **指令微调阶段**: MMathCoT-1M
+  - 1.43M源数据经过CoT扩展、重写、格式统一后得到
+  - 包含440K CoT扩展、715K重写、275K格式统一样本
 
-3. **Stage III**: PS-GRPO在线强化学习
-   - Process-Supervised Group-Relative-Policy-Optimization
-   - 缓解奖励欺骗和长度偏差问题
+**基础模型**:
+- **视觉编码器**: SAM-B + SigLIP-L (混合视觉塔)
+- **语言模型**: Qwen2.5-Math-Instruct (8B参数)
+- **投影器**: 两层MLP连接视觉和语言模态
+
+**训练策略**:
+- **对齐训练**:
+  - 只训练MLP投影器
+  - 冻结视觉编码器和语言模型
+- **指令微调**:
+  - 全参数微调 (full-parameter fine-tuning)
+  - 使用标准监督学习目标 (交叉熵损失)
+  - 训练目标: L_SFT = -E_{(x,y)~D_SFT} Σ log M(y_t|x, y_<t)
+
+**训练产物**:
+- **URSA-8B**: 具有强大多模态数学推理能力的基础模型
+
+**辅助工具**:
+- 使用Gemini-1.5-Flash-002进行数据合成和质量过滤
+
+---
+
+#### Stage II: 过程奖励模型训练
+
+**训练数据**: DualMath-1.1M (约1.1M过程监督样本)
+- **SBEL (Binary Error Locating)**: ~773K样本
+  - ~553K错误解决方案 (从URSA-8B零样本推理MMathCoT-1M得到)
+  - ~180K正确解决方案 (作为正例)
+  - 使用MCTS进行错误步骤标注
+  - 二分搜索优化标注效率
+- **SMIE (Misinterpretation Insertion Engine)**: ~302K样本
+  - 针对图像-文本感知不一致问题
+  - 使用Gemini提取图像信息并插入误解
+
+**基础模型**:
+- 基于**URSA-8B**继续训练 (Stage I的产物)
+
+**训练策略**:
+- 在每个推理步骤后附加特殊token `и`
+- 建模为二分类任务 (每步正确/错误)
+- 训练目标: L_PRM = -E_{(e,y)~D_PRM} Σ [y_j log π_p(e_j) + (1-y_j) log(1-π_p(e_j))]
+- 同时关注逻辑正确性和感知一致性
+
+**训练产物**:
+- **URSA-RM-8B**: 首个开源的小型多模态数学过程奖励模型
+
+**数据标注工具**:
+- MCTS (蒙特卡洛树搜索) 用于错误定位
+- Gemini-1.5-Flash-002 用于误解插入
+
+---
+
+#### Stage III: PS-GRPO在线强化学习
+
+**训练数据**:
+- 从MMathCoT-1M中选择15K样本用于在线RL训练
+
+**基础模型**:
+- **策略模型**: URSA-8B (Stage I的产物)
+- **奖励模型**: URSA-RM-8B (Stage II的产物)
+
+**训练策略**: Process-Supervised GRPO
+- **核心思想**: 过程作为结果奖励建模 (process-as-outcome reward modeling)
+- **关键机制**:
+  - 检测"drop-moment" (PRM分数显著下降点)
+  - 对被PRM质疑的rollouts施加惩罚
+  - 通过组内相对比较优化策略
+- **奖励计算**:
+  ```
+  如果检测到drop-moment:
+    reward = outcome_reward × γ  (γ=0.5)
+  否则:
+    reward = outcome_reward
+  ```
+- **Drop-moment判断**: 使用阈值ρ=0.3判断PRM分数下降
+
+**训练目标**:
+- 不直接优化标量过程奖励
+- 通过GRPO算法最大化组内相对优势
+- 隐式惩罚过程级不一致性
+
+**训练产物**:
+- **URSA-8B-PS-GRPO**: 最终的强化学习优化模型
+
+**对比方法**:
+- **Vanilla GRPO**: 只使用结果奖励的标准GRPO
+- **PS-GRPO**: 集成过程监督的改进版GRPO
+- 性能提升: PS-GRPO平均提升6.8% vs Vanilla GRPO的3.1%
+
+---
+
+### 三阶段训练流程总结
+
+| 阶段 | 输入模型 | 训练数据 | 训练方法 | 输出模型 | 数据规模 |
+|------|---------|---------|---------|---------|---------|
+| **Stage I** | Qwen2.5-Math-Instruct + SAM-B + SigLIP-L | URSA-Alignment-860K + MMathCoT-1M | 对齐训练 + 全参数SFT | URSA-8B | 860K + 1M |
+| **Stage II** | URSA-8B | DualMath-1.1M (SBEL + SMIE) | 二分类PRM训练 | URSA-RM-8B | 1.1M |
+| **Stage III** | URSA-8B (策略) + URSA-RM-8B (奖励) | MMathCoT-1M (15K子集) | PS-GRPO在线RL | URSA-8B-PS-GRPO | 15K |
+
+**关键特点**:
+- **Stage I**: 标准监督学习，构建强大基础模型
+- **Stage II**: 判别式训练，学习评估推理过程质量
+- **Stage III**: 强化学习，通过相对比较优化策略
+- **无RFT**: 三个阶段均未使用Rejection Fine-Tuning方法
+
+---
+
+### 三阶段在代码库中的对应关系
+
+#### Stage I 相关代码
+
+**模型架构实现**:
+- **主模型类**: `models/ursa_model/modeling_ursa.py`
+  - `UrsaForConditionalGeneration` (第78-387行): Stage I训练的生成模型类
+  - 包含视觉编码器、投影器、语言模型的完整架构
+
+**核心组件**:
+- **视觉编码器**: `models/ursa_model/clip_encoder.py` (242行)
+  - `HybridVisionTower`: 混合视觉塔实现，结合SAM-B和SigLIP-L
+
+- **投影器**: `models/ursa_model/projector.py` (100行)
+  - `MlpProjector`: 两层MLP投影器，连接视觉和语言模态
+
+- **SigLIP视觉模型**: `models/ursa_model/siglip_vit.py` (681行)
+  - SigLIP Vision Transformer实现
+
+- **SAM组件**: `models/ursa_model/sam.py` (593行)
+  - Segment Anything Model相关组件
+
+**配置和处理**:
+- **配置类**: `models/ursa_model/configuration_ursa.py` (143行)
+  - `UrsaConfig`: 模型配置
+  - `VisionConfig`: 视觉编码器配置
+  - `AlignerConfig`: 投影器配置
+
+- **处理器**: `models/ursa_model/processing_ursa.py` (60行)
+  - `UrsaProcessor`: 多模态输入处理器
+
+- **图像处理**: `models/ursa_model/image_processing_vlm.py` (208行)
+  - `VLMImageProcessor`: 图像预处理
+
+**训练数据**:
+- 数据集位置: HuggingFace
+  - URSA-Alignment-860K: 对齐数据
+  - MMathCoT-1M: 指令微调数据
+
+**训练产物**: URSA-8B模型
+
+---
+
+#### Stage II 相关代码
+
+**模型架构实现**:
+- **奖励模型类**: `models/ursa_model/modeling_ursa.py`
+  - `UrsaForTokenClassification` (第389-705行): Stage II训练的PRM模型类
+  - 基于URSA-8B架构，添加token分类头用于步骤级评分
+
+**推理和评分**:
+- **PRM推理脚本**: `inference/prm_infer_score.py` (8629字节)
+  - `single_inference`: 单样本推理函数
+  - `return_score`: 分数聚合函数（min/avg）
+  - `replace_specific_plus_minus_with_ki`: 插入特殊token `и` 标记推理步骤
+  - `prepare_input`: 准备PRM输入格式
+  - 支持Best-of-N验证策略
+
+- **PRM推理启动脚本**: `inference/start_score_infer.sh`
+  - 配置PRM评分推理的参数
+
+**关键机制**:
+- 特殊token `и` 用于分隔推理步骤
+- 每个步骤后的token位置输出logit，通过sigmoid转换为概率分数
+- 支持min和avg两种分数聚合策略
+
+**训练数据**:
+- 数据集位置: HuggingFace
+  - DualMath-1.1M: 过程监督数据
+    - SBEL: ~773K样本（逻辑正确性）
+    - SMIE: ~302K样本（感知一致性）
+
+**训练产物**: URSA-RM-8B模型
+
+---
+
+#### Stage III 相关代码
+
+**说明**:
+本代码库**不包含Stage III的训练代码**，仅包含推理代码。Stage III (PS-GRPO)是在线强化学习阶段，训练代码未开源。
+
+**相关推理代码**:
+- **基础推理**: `inference/vllm_infer.py` (7677字节)
+  - 使用vLLM加速推理
+  - 支持多数据集格式（mathvista/dynamath/wemath/mathverse/mathvision）
+  - `extract_answer_try_all_methods`: 答案提取函数
+
+- **推理启动脚本**: `inference/start_vllm_infer.sh`
+  - 配置推理参数（温度、数据集、生成数量等）
+
+**vLLM集成**:
+- **定制vLLM**: `vllm/` 目录
+  - 特定commit版本: `0b8bb86bf19d68950b4d92a99350e07a26ec0d2c`
+  - 支持URSA模型架构的推理加速
+
+**环境配置**:
+- **配置脚本**: `start.sh` (318字节)
+  - 卸载现有vLLM
+  - 安装特定版本vLLM
+  - 配置flash attention
+
+**训练数据**:
+- MMathCoT-1M的15K子集（用于在线RL）
+
+**训练产物**: URSA-8B-PS-GRPO模型（未开源训练代码）
+
+---
+
+### 代码库文件结构总结
+
+```
+URSA-MATH/
+├── models/ursa_model/              # Stage I & II 模型实现
+│   ├── modeling_ursa.py            # 主模型类 (705行)
+│   │   ├── UrsaForConditionalGeneration (78-387行)   # Stage I 生成模型
+│   │   └── UrsaForTokenClassification (389-705行)    # Stage II 奖励模型
+│   ├── clip_encoder.py             # 混合视觉塔 (242行)
+│   ├── projector.py                # MLP投影器 (100行)
+│   ├── siglip_vit.py              # SigLIP视觉模型 (681行)
+│   ├── sam.py                      # SAM组件 (593行)
+│   ├── configuration_ursa.py       # 配置类 (143行)
+│   ├── processing_ursa.py          # 处理器 (60行)
+│   ├── image_processing_vlm.py     # 图像处理 (208行)
+│   └── __init__.py                 # 模块导出 (29行)
+│
+├── inference/                      # 推理脚本
+│   ├── vllm_infer.py              # vLLM推理 (Stage I & III产物)
+│   ├── prm_infer_score.py         # PRM评分推理 (Stage II产物)
+│   ├── start_vllm_infer.sh        # vLLM推理启动脚本
+│   └── start_score_infer.sh       # PRM评分启动脚本
+│
+├── vllm/                           # 定制vLLM实现
+│   └── [vLLM源码]                 # 支持URSA架构的推理加速
+│
+├── start.sh                        # 环境配置脚本
+├── PAPER.md                        # 论文完整文本
+├── CLAUDE.md                       # 项目指南（本文件）
+└── README.md                       # 项目说明
+```
+
+**注意事项**:
+1. **训练代码未开源**: 本repo仅包含模型架构和推理代码，三个阶段的训练脚本均未开源
+2. **模型权重**: 训练产物（URSA-8B、URSA-RM-8B）可从HuggingFace下载
+3. **数据集**: 训练数据集（MMathCoT-1M、DualMath-1.1M）可从HuggingFace获取
+4. **推理优先**: 代码库重点在于展示如何使用训练好的模型进行推理和评估
 
 ## 架构设计
 
