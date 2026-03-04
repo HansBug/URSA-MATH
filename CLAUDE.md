@@ -301,6 +301,158 @@ R^i = {
 
 ---
 
+## PS-GRPO算法实现细节
+
+### Drop-moment检测算法
+
+**核心公式**:
+```
+δ_i = max{(r_p,j - r_p,j+1) / r_p,j | j = 0,1,...,N-1} > ρ
+```
+
+**参数**:
+- ρ = 0.3: drop-moment判断阈值
+- 当相邻步骤奖励下降超过30%时，认为发生drop-moment
+
+**实现逻辑**:
+```python
+def detect_drop_moment(step_scores, threshold=0.3):
+    """
+    检测PRM奖励序列中的显著下降点
+
+    Args:
+        step_scores: 每个步骤的PRM分数 (n_steps,)
+        threshold: drop-moment阈值 ρ
+
+    Returns:
+        (has_drop_moment, max_relative_drop)
+    """
+    if len(step_scores) < 2:
+        return False, 0.0
+
+    # 计算相邻步骤的相对下降
+    relative_drops = []
+    for j in range(len(step_scores) - 1):
+        if step_scores[j] > 1e-6:  # 避免除零
+            relative_drop = (step_scores[j] - step_scores[j+1]) / step_scores[j]
+            relative_drops.append(relative_drop)
+
+    if not relative_drops:
+        return False, 0.0
+
+    max_drop = max(relative_drops)
+    has_drop_moment = max_drop > threshold
+
+    return has_drop_moment, max_drop
+```
+
+### PS-GRPO奖励计算
+
+**三级奖励系统**:
+```python
+def compute_ps_grpo_reward(outcome_correct, has_drop_moment, gamma=0.5):
+    """
+    计算PS-GRPO奖励
+
+    奖励规则:
+        - 答案正确 + 无drop-moment → R = 1.0
+        - 答案正确 + 有drop-moment → R = 1 - γ (默认0.5)
+        - 答案错误 → R = 0.0
+
+    Args:
+        outcome_correct: 最终答案是否正确
+        has_drop_moment: 是否检测到drop-moment
+        gamma: 惩罚系数 (默认0.5)
+
+    Returns:
+        最终奖励值
+    """
+    if not outcome_correct:
+        return 0.0
+
+    if has_drop_moment:
+        return 1.0 - gamma  # 对被PRM质疑的rollouts施加惩罚
+
+    return 1.0
+```
+
+**设计原理**:
+- **不依赖标量奖励**: 避免直接优化过程分数，防止奖励欺骗
+- **相对质量判断**: 通过drop-moment识别相对质量，而非绝对分数
+- **隐式惩罚**: 对被PRM质疑的正确答案施加惩罚，鼓励严谨推理
+- **缓解长度偏差**: 关注相对下降而非绝对分数，避免保守评分
+
+### 训练流程集成
+
+**在线RL训练循环**:
+```
+1. 策略模型生成N个候选答案 (N=8)
+   ↓
+2. PRM对每个答案进行步骤级评分
+   - 插入特殊token и 标记步骤
+   - 前向传播获取每步分数
+   - 返回完整的step_scores序列
+   ↓
+3. 检测drop-moment
+   - 计算相邻步骤的相对下降
+   - 判断是否超过阈值ρ=0.3
+   ↓
+4. 计算PS-GRPO奖励
+   - 结合outcome_correct和has_drop_moment
+   - 应用三级奖励系统
+   ↓
+5. GRPO优化策略模型
+   - 使用调整后的奖励计算优势
+   - 通过组内相对比较优化策略
+```
+
+**关键数据流**:
+- **输入**: 问题prompt + 生成的推理过程
+- **PRM输出**: 每个步骤的概率分数 [0, 1]
+- **Drop-moment**: 布尔值 + 最大相对下降值
+- **最终奖励**: {0.0, 0.5, 1.0}
+
+### 超参数配置
+
+**PS-GRPO核心参数**:
+- **ρ (rho)**: 0.3 - drop-moment检测阈值
+- **γ (gamma)**: 0.5 - 奖励惩罚系数
+
+**GRPO训练参数**:
+- **n_samples_per_prompt**: 8 - 每个问题生成8个候选答案
+- **num_episodes**: 10 - 训练10个episodes
+- **init_kl_coef**: 0.001 - KL散度系数
+- **actor_learning_rate**: 1e-6 - 策略模型学习率
+- **rollout_batch_size**: 128 - 推理批次大小
+- **train_batch_size**: 128 - 训练批次大小
+
+**数据配置**:
+- **训练数据**: 从MMathCoT-1M中选择15K样本
+- **数据格式**: 每个样本包含问题prompt和标签
+- **响应格式**: 必须遵循"Step N: ... †Answer: ..."格式
+
+### 实验结果对比
+
+**性能提升** (相对URSA-8B基线):
+
+| 方法 | 平均提升 | WE-MATH | MathVision | MathVerse |
+|------|---------|---------|------------|-----------|
+| Vanilla GRPO | +3.1% | +4.9% | +1.8% | - |
+| PS-GRPO | +6.8% | +11.4% | +9.8% | +11.4% |
+| **提升倍数** | **2.2x** | **2.3x** | **5.4x** | - |
+
+**关键观察**:
+- PS-GRPO在所有基准上都显著优于vanilla GRPO
+- 在MathVision上提升最显著（5.4x）
+- 平均性能提升翻倍（3.1% → 6.8%）
+
+**稳定性分析**:
+- PRM的BoN选择能力在在线RL过程中保持稳定
+- Drop-moment检测的准确率保持在高水平
+- 训练过程中响应长度保持稳定，无明显长度偏差
+
+---
+
 ## 模型加载与推理详解
 
 ### URSA-8B推理流程（生成模型）
@@ -971,3 +1123,358 @@ URSA-8B在各基准上的表现：
 - GeoQA (full): 73.5%
 
 使用URSA-RM-8B进行Best-of-32验证可显著提升性能。
+
+---
+
+## Stage 3训练数据和配置
+
+### 训练数据规格
+
+**数据集选择**:
+- 从MMathCoT-1M中选择15K样本用于在线RL训练
+- 数据格式要求：
+  ```json
+  {
+    "prompt": "数学问题文本",
+    "label": "math_prm",
+    "reference": "标准答案" (可选)
+  }
+  ```
+
+**响应格式要求**:
+模型生成的响应必须严格遵循以下格式，否则PRM返回0.0奖励：
+```
+Step 1: <推理内容>
+Step 2: <推理内容>
+...
+†Answer: <最终答案>
+```
+
+**System Prompt示例**:
+```
+A conversation between the User and Assistant. The User asks a math question,
+and the Assistant solves it step by step. Each step MUST begin with "Step N:"
+(e.g. "Step 1:", "Step 2:") on its own line. After all steps, the final answer
+MUST be on its own line prefixed with "†Answer:" (e.g. "†Answer: 42").
+```
+
+### 训练超参数配置
+
+**PS-GRPO核心参数**:
+```bash
+PS_GRPO_RHO=0.3      # Drop-moment检测阈值
+PS_GRPO_GAMMA=0.5    # 奖励惩罚系数
+```
+
+**GRPO训练参数**:
+```bash
+N_SAMPLES=8           # 每个问题生成8个候选答案
+EPISODE=10            # 训练10个episodes
+WARMUP=0.03           # 学习率warmup比例
+KL=0.001              # KL散度系数
+LR=1e-6               # 策略模型学习率
+MAX_LENGTH=4096       # 最大序列长度
+PROMPT_MAX_LEN=1024   # 最大prompt长度
+GENERATE_MAX_LEN=3072 # 最大生成长度
+```
+
+**批次大小配置**:
+```bash
+RBS=128               # Rollout批次大小
+TBS=128               # 训练批次大小
+micro_train_batch_size=4    # 每GPU训练micro batch
+micro_rollout_batch_size=4  # 每GPU推理micro batch
+```
+
+**分布式训练配置**:
+```bash
+MLP_WORKER_NUM=1      # 节点数量
+MLP_WORKER_GPU=8      # 每节点GPU数量
+ENGINE_TP=2           # vLLM/SGLang张量并行度
+```
+
+**优化器配置**:
+```bash
+--zero_stage 3              # DeepSpeed ZeRO Stage 3
+--bf16                      # BF16混合精度
+--gradient_checkpointing    # 梯度检查点
+--adam_offload              # Adam优化器offload
+--l2 1.0e-2                 # L2正则化
+```
+
+---
+
+## 代码实现参考
+
+### PRM推理核心逻辑
+
+**特殊token插入** (`replace_specific_plus_minus_with_ki`):
+```python
+def replace_specific_plus_minus_with_ki(text):
+    """
+    在每个推理步骤后插入特殊token и
+
+    处理逻辑:
+    1. 找到所有"Step N:"标记
+    2. 在每个步骤的最后非空白字符后插入' и'
+    3. 在"†Answer:"前也插入' и'
+    """
+    pattern = r'Step \d+'
+    matches = list(re.finditer(pattern, text))
+    positions = [(match.start(), match.end()) for match in matches]
+
+    text_list = list(text)
+    insert_pos = []
+
+    # 在每个步骤结束位置插入
+    for i in range(1, len(positions)):
+        for j in range(positions[i][0] - 1, positions[i - 1][1], -1):
+            if text_list[j] != ' ' and text_list[j] != '\n':
+                insert_pos.append(j + 1)
+                break
+
+    # 在Answer前插入
+    answer_start = text.find('†Answer:')
+    for j in range(answer_start - 1, positions[-1][1], -1):
+        if text_list[j] != ' ' and text_list[j] != '\n':
+            insert_pos.append(j + 1)
+            break
+
+    # 从后向前插入，避免位置偏移
+    for index in sorted(insert_pos, reverse=True):
+        text = text[:index] + ' и' + text[index:]
+
+    return text
+```
+
+**PRM评分提取**:
+```python
+def extract_prm_scores(model, processor, prompt, response, image):
+    """
+    提取每个步骤的PRM分数
+
+    返回:
+        step_scores: 每个步骤的概率分数 [0, 1]
+    """
+    # 1. 插入特殊token
+    input_text = prepare_input(prompt, response)
+    input_text = replace_specific_plus_minus_with_ki(input_text)
+
+    # 2. 构建输入
+    conv = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "<|image|>" + input_text}
+    ]
+    prompt_text = processor.apply_chat_template(conv, add_generation_prompt=True)
+
+    # 3. 处理图像
+    if isinstance(image, str):
+        raw_image = Image.open(image).convert('RGB')
+    else:
+        raw_image = image
+
+    # 4. 前向传播
+    inputs = processor(prompt_text, [raw_image], return_tensors='pt').to(device, torch.bfloat16)
+
+    with torch.no_grad():
+        # 获取logits (batch, seq_len, 1)
+        logits = model(**inputs).logits
+
+        # 找到特殊token и的位置
+        tag_id = processor.tokenizer.encode(' и', add_special_tokens=False)[0]
+        input_ids = inputs['input_ids'].view(-1)
+
+        # 插入575个占位符对齐图像特征
+        insert_values = torch.full((575,), -1).to(input_ids.device)
+        input_ids_aligned = torch.cat((input_ids[:1], insert_values, input_ids[1:]))
+
+        # 提取и token位置的分数
+        logits_flat = logits.view(-1)
+        step_scores = logits_flat[input_ids_aligned == tag_id]
+
+        # Sigmoid转换为概率
+        step_scores = torch.sigmoid(step_scores)
+
+    return step_scores
+```
+
+**分数聚合策略**:
+```python
+def aggregate_scores(step_scores, method='min'):
+    """
+    聚合步骤级分数
+
+    Args:
+        step_scores: 每个步骤的分数 (n_steps,)
+        method: 'min' | 'avg' | 'last'
+
+    Returns:
+        聚合后的分数
+    """
+    if method == 'min':
+        # 最保守：取最小值
+        return torch.min(step_scores)
+    elif method == 'avg':
+        # 平均：综合所有步骤
+        return torch.mean(step_scores)
+    elif method == 'last':
+        # 最后一步：接近ORM行为
+        return step_scores[-1]
+    else:
+        raise ValueError(f"Unknown method: {method}")
+```
+
+### Drop-moment检测实现
+
+```python
+def detect_drop_moment(step_scores, threshold=0.3):
+    """
+    检测PRM奖励序列中的drop-moment
+
+    Args:
+        step_scores: 每个步骤的PRM分数 (n_steps,)
+        threshold: drop-moment阈值 ρ (默认0.3)
+
+    Returns:
+        (has_drop_moment, max_relative_drop)
+
+    公式:
+        δ_i = max{(r_p,j - r_p,j+1) / r_p,j | j = 0,1,...,N-1} > ρ
+    """
+    if len(step_scores) < 2:
+        return False, 0.0
+
+    # 计算相邻步骤的相对下降
+    relative_drops = []
+    for j in range(len(step_scores) - 1):
+        if step_scores[j] > 1e-6:  # 避免除零
+            relative_drop = (step_scores[j] - step_scores[j+1]) / step_scores[j]
+            relative_drops.append(relative_drop.item())
+
+    if not relative_drops:
+        return False, 0.0
+
+    max_drop = max(relative_drops)
+    has_drop_moment = max_drop > threshold
+
+    return has_drop_moment, max_drop
+```
+
+### PS-GRPO奖励计算
+
+```python
+def compute_ps_grpo_reward(outcome_correct, has_drop_moment, gamma=0.5):
+    """
+    计算PS-GRPO奖励
+
+    三级奖励系统:
+        - 答案正确 + 无drop-moment → R = 1.0
+        - 答案正确 + 有drop-moment → R = 1 - γ (默认0.5)
+        - 答案错误 → R = 0.0
+
+    Args:
+        outcome_correct: 最终答案是否正确
+        has_drop_moment: 是否检测到drop-moment
+        gamma: 惩罚系数 (默认0.5)
+
+    Returns:
+        最终奖励值
+    """
+    if not outcome_correct:
+        return 0.0
+
+    if has_drop_moment:
+        return 1.0 - gamma  # 对被PRM质疑的rollouts施加惩罚
+
+    return 1.0
+
+
+def process_prm_scores_for_ps_grpo(
+    prm_scores,
+    outcome_rewards,
+    rho=0.3,
+    gamma=0.5
+):
+    """
+    处理PRM分数并应用PS-GRPO奖励调整
+
+    Args:
+        prm_scores: 每个rollout的步骤级PRM分数列表
+        outcome_rewards: 结果奖励 (batch_size,)
+        rho: drop-moment阈值 (默认0.3)
+        gamma: 惩罚系数 (默认0.5)
+
+    Returns:
+        调整后的奖励 (batch_size,)
+    """
+    adjusted_rewards = []
+
+    for step_scores, outcome_reward in zip(prm_scores, outcome_rewards):
+        # 判断答案是否正确
+        outcome_correct = outcome_reward > 0.5
+
+        # 检测drop-moment
+        has_drop_moment, max_drop = detect_drop_moment(step_scores, threshold=rho)
+
+        # 计算PS-GRPO奖励
+        final_reward = compute_ps_grpo_reward(
+            outcome_correct=outcome_correct,
+            has_drop_moment=has_drop_moment,
+            gamma=gamma
+        )
+
+        adjusted_rewards.append(final_reward)
+
+    return torch.tensor(adjusted_rewards, dtype=outcome_rewards.dtype, device=outcome_rewards.device)
+```
+
+### 训练循环集成
+
+```python
+# 伪代码：PS-GRPO训练循环
+for episode in range(num_episodes):
+    # 1. 生成经验
+    for batch in dataloader:
+        prompts = batch['prompts']
+        images = batch['images']
+
+        # 策略模型生成N个候选答案
+        responses = actor.generate(
+            prompts=prompts,
+            images=images,
+            n_samples=n_samples_per_prompt
+        )
+
+        # 2. PRM评分
+        prm_step_scores = []
+        for prompt, response, image in zip(prompts, responses, images):
+            step_scores = extract_prm_scores(
+                model=reward_model,
+                processor=processor,
+                prompt=prompt,
+                response=response,
+                image=image
+            )
+            prm_step_scores.append(step_scores)
+
+        # 3. 计算结果奖励（基于答案正确性）
+        outcome_rewards = compute_outcome_rewards(responses, references)
+
+        # 4. 应用PS-GRPO奖励调整
+        if use_ps_grpo:
+            final_rewards = process_prm_scores_for_ps_grpo(
+                prm_scores=prm_step_scores,
+                outcome_rewards=outcome_rewards,
+                rho=ps_grpo_rho,
+                gamma=ps_grpo_gamma
+            )
+        else:
+            # Vanilla GRPO: 只使用结果奖励
+            final_rewards = outcome_rewards
+
+        # 5. 计算优势和更新策略
+        advantages = compute_advantages(final_rewards, method='group_norm')
+        loss = compute_policy_loss(advantages)
+        loss.backward()
+        optimizer.step()
+```
