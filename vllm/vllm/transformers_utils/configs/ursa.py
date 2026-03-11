@@ -1,7 +1,20 @@
+import sys
+
+if sys.version_info >= (3, 10):
+    import collections
+    import collections.abc
+
+    for type_name in collections.abc.__all__:
+        setattr(collections, type_name, getattr(collections.abc, type_name))
+
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 from transformers import CONFIG_MAPPING
-from attrdictionary import AttrDict
+
+try:
+    from attrdictionary import AttrDict
+except ImportError:
+    from attrdict import AttrDict
 
 logger = logging.get_logger(__name__)
 

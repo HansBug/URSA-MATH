@@ -1,0 +1,43 @@
+# Validated in conda env `ursa` on 2026-03-11.
+# Install with: pip install -r requirements.txt
+# CUDA wheels for torch/torchvision:
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# Core URSA torch/transformers path
+torch==2.5.1+cu124
+torchvision==0.20.1+cu124
+transformers==4.45.2
+tokenizers==0.20.1
+safetensors==0.4.5
+huggingface-hub==0.26.2
+accelerate==1.0.1
+
+# Vision/model utilities
+numpy==1.26.4
+pillow==11.0.0
+timm==1.0.11
+einops==0.8.0
+attrdict==2.0.1
+sentencepiece==0.2.1
+protobuf==5.29.5
+
+# Script/runtime dependencies used by inference scripts
+fire==0.7.1
+jsonlines==4.0.0
+loguru==0.7.3
+pandas==2.2.3
+regex==2025.11.3
+tqdm==4.67.1
+requests==2.32.5
+psutil==7.1.2
+py-cpuinfo==9.0.0
+pyyaml==6.0.3
+filelock==3.20.0
+
+# vLLM path
+# After installation, run `bash start.sh` once to link the repo-local vllm
+# source tree and copy the compiled extensions into this checkout.
+vllm @ https://vllm-wheels.s3.us-west-2.amazonaws.com/0b8bb86bf19d68950b4d92a99350e07a26ec0d2c/vllm-1.0.0.dev-cp38-abi3-manylinux1_x86_64.whl
+xformers==0.0.28.post3
+ray==2.54.0
+nvidia-ml-py==13.590.48

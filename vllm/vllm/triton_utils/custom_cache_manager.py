@@ -1,7 +1,21 @@
 import os
 
-from triton.runtime.cache import (FileCacheManager, default_cache_dir,
-                                  default_dump_dir, default_override_dir)
+try:
+    from triton.runtime.cache import (FileCacheManager, default_cache_dir,
+                                      default_dump_dir,
+                                      default_override_dir)
+except ImportError:
+    from triton import knobs
+    from triton.runtime.cache import FileCacheManager
+
+    def default_cache_dir():
+        return knobs.cache.dir
+
+    def default_dump_dir():
+        return knobs.cache.dump_dir
+
+    def default_override_dir():
+        return knobs.cache.override_dir
 
 from vllm.logger import init_logger
 

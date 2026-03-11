@@ -1,1 +1,35 @@
 .idea
+checkpoints/
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python packaging / build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / lint / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments / notebooks
+.venv/
+venv/
+env/
+ENV/
+.ipynb_checkpoints/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

@@ -20,9 +20,9 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import collections
 import collections.abc
 import copy
-from attrdictionary import AttrDict
 import math
 import warnings
 from dataclasses import dataclass
@@ -31,6 +31,14 @@ from functools import partial
 from itertools import chain, repeat
 from typing import (Any, Callable, Dict, Final, List, Literal, Optional, Mapping, Sequence,
                     Set, Tuple, Type, Union)
+
+for type_name in collections.abc.__all__:
+    setattr(collections, type_name, getattr(collections.abc, type_name))
+
+try:
+    from attrdictionary import AttrDict
+except ImportError:
+    from attrdict import AttrDict
 
 import numpy as np
 import torch
