@@ -176,7 +176,7 @@ python examples/run_ursa_8b_torch_example.py \
   --max-new-tokens 48
 ```
 
-## 8. 示例二：URSA-RM-8B 加载到 GPU，并对一步步答案打分
+## 8. 示例二：URSA-RM-8B 加载到 GPU，并输出论文第 4 阶段所需的 PRM / RL 字段
 
 示例脚本：
 
@@ -187,7 +187,9 @@ python examples/run_ursa_8b_torch_example.py \
 - 使用本仓库本地的 `UrsaForTokenClassification`
 - 从 `checkpoints/URSA-RM-8B` 加载完整权重
 - 把模型放到 GPU
-- 用 `figures/framework.png` 和一段分步答案做一次打分
+- 默认对 4 条 rollout 一起打分
+- 输出每一步的 `process_reward_sequence`
+- 输出 BoN 选择、drop-moment、PS-GRPO 奖励，以及论文附录里两个 PRM-integrated GRPO 变体的中间量
 
 ### 运行命令
 
@@ -210,42 +212,119 @@ CUDA_VISIBLE_DEVICES=2 python examples/run_ursa_rm_8b_score_example.py --device 
 - 问题：
 
 ```text
-How many training stages are shown in this diagram?
+How many numbered training stages are shown in this diagram?
 ```
 
-- 待打分回答：
+- 默认 rollout 组：
 
 ```text
-Step 1: The figure is a training framework diagram. Step 2: I can identify four training stages in the diagram. †Answer: 4
+1. 一个过程严谨、答案正确的 rollout
+2. 一个答案正确但过程出现明显下降时刻的 rollout
+3. 一个答案错误的 rollout
+4. 一个最终修正错误判断的 rollout
 ```
+
+- 默认超参数：
+  - `rho=0.3`
+  - `gamma=0.5`
+  - `ground_truth_answer=3`
+
+### 输出字段如何对应论文
+
+- `step_scores` / `process_reward_sequence`
+  - 对应第 4 节的过程奖励序列 `{r_p1^i, r_p2^i, ...}`
+- `avg_process_reward`
+  - 对应附录 B.2 的 `mean{M_p(q, s_i)}`
+- `bon_by_mean_process_reward`
+  - 对应公式 10 的 Best-of-N 选择结果
+- `drop_moment.relative_drops` / `drop_moment.max_relative_drop`
+  - 对应公式 5 里的 `delta_p^i`
+- `paper_metrics.ps_grpo_reward`
+  - 对应公式 6 的 `R^i`
+- `paper_metrics.vanilla_grpo_advantage`
+  - 对应附录 B.1 公式 7 的组内标准化优势
+- `paper_metrics.variant1_rollout_reward` / `variant1_advantage`
+  - 对应附录 B.1 里 `r^i = r_o^i + mean(r_s^i)`
+- `paper_metrics.variant2_step_advantages`
+  - 对应附录 B.1 公式 9 的逐步优势
+
+说明：
+
+- 这里的 `standardization=population_std`，是为了在单 rollout 或组内奖励完全相同的情况下避免 `std=0` 产生 NaN
+- 默认示例里 `outcome_reward` 通过 `ground_truth_answer=3` 自动得到，不需要手工再传一遍
 
 ### 已验证成功的参考输出
 
-我在当前机器上实际跑通时，输出类似：
+我在当前机器上实际跑通时，输出核心字段如下：
 
 ```json
 {
   "model_class": "UrsaForTokenClassification",
   "device": "cuda:0",
   "dtype": "torch.bfloat16",
-  "load_seconds": 18.8,
+  "load_seconds": 16.8,
   "peak_mem_gb": 16.24,
-  "min_score": 0.910156,
-  "avg_score": 0.917969
+  "paper_hyperparameters": {
+    "rho": 0.3,
+    "gamma": 0.5
+  },
+  "group_size": 4,
+  "bon_by_mean_process_reward": {
+    "selected_rollout_id": 0,
+    "selected_avg_process_reward": 0.954427,
+    "selected_answer": "3"
+  },
+  "group_statistics": {
+    "avg_process_reward_mean": 0.785644,
+    "outcome_reward_mean": 0.75,
+    "ps_grpo_reward_mean": 0.625
+  }
 }
 ```
 
 ### 自定义参数
 
-例如换成你自己的问题、答案和图片：
+如果你只想打一条自定义答案：
 
 ```bash
 python examples/run_ursa_rm_8b_score_example.py \
   --device cuda:0 \
   --model-path ./checkpoints/URSA-RM-8B \
   --image-path ./figures/framework.png \
-  --question "How many training stages are shown in this diagram?" \
-  --response "Step 1: This is a training diagram. Step 2: It contains four stages. †Answer: 4"
+  --question "How many numbered training stages are shown in this diagram?" \
+  --ground-truth-answer 3 \
+  --response "Step 1: The figure labels Stage 1, Stage 2, and Stage 3. †Answer: 3"
+```
+
+如果你想模拟论文里的一个 rollout group，可以重复传 `--response`：
+
+```bash
+python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --ground-truth-answer 3 \
+  --rho 0.3 \
+  --gamma 0.5 \
+  --response "Step 1: The diagram labels Stage 1, Stage 2, and Stage 3. †Answer: 3" \
+  --response "Step 1: The top row has two numbered stages. Step 2: The lower-left block is Stage 3. †Answer: 3" \
+  --response "Step 1: There are four big regions, so there are four stages. †Answer: 4"
+```
+
+如果 rollout 比较多，建议放到 JSON 文件里：
+
+```json
+[
+  {"response": "Step 1: ... †Answer: 3"},
+  {"response": "Step 1: ... †Answer: 4", "outcome_reward": 0}
+]
+```
+
+然后执行：
+
+```bash
+python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --responses-file ./your_rollouts.json \
+  --ground-truth-answer 3
 ```
 
 ## 9. Standalone 示例
@@ -291,6 +370,14 @@ CUDA_VISIBLE_DEVICES=2 python examples/run_ursa_8b_torch_example_standalone.py -
 CUDA_VISIBLE_DEVICES=3 python examples/run_ursa_rm_8b_score_example_standalone.py --device cuda:0
 ```
 
+这个 standalone 版本和普通版输出同一套 JSON schema，也包含：
+
+- `step_scores`
+- `process_reward_sequence`
+- `bon_by_mean_process_reward`
+- `drop_moment`
+- `paper_metrics` 里的 vanilla GRPO / Variant 1 / Variant 2 / PS-GRPO 字段
+
 已验证成功的参考输出核心字段：
 
 ```json
@@ -298,9 +385,14 @@ CUDA_VISIBLE_DEVICES=3 python examples/run_ursa_rm_8b_score_example_standalone.p
   "model_class": "UrsaForTokenClassification",
   "device": "cuda:0",
   "dtype": "torch.bfloat16",
+  "load_seconds": 15.82,
   "peak_mem_gb": 16.24,
-  "min_score": 0.910156,
-  "avg_score": 0.917969
+  "group_size": 4,
+  "bon_by_mean_process_reward": {
+    "selected_rollout_id": 0,
+    "selected_avg_process_reward": 0.954427,
+    "selected_answer": "3"
+  }
 }
 ```
 
