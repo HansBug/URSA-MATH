@@ -88,7 +88,7 @@ def choose_image_field(
     image_root: Path,
     fallback_image: Path,
 ):
-    real_image = image_root / raw_image_url
+    real_image = (image_root / raw_image_url).resolve()
     if real_image.exists():
         return {
             "effective_image_root": str(image_root),
@@ -99,7 +99,7 @@ def choose_image_field(
     return {
         "effective_image_root": str(fallback_image.parent),
         "image_field": fallback_image.name,
-        "resolved_image_path": str(fallback_image),
+        "resolved_image_path": str(fallback_image.resolve()),
         "used_fallback": True,
     }
 
@@ -119,14 +119,22 @@ def preview(text: str, limit: int = 240) -> str:
     return compact[:limit] + "..."
 
 
+def build_negative_response(response: str) -> str:
+    negative = response.replace(
+        "Step 3: This implies that knowing side lengths allows triangle type determination.",
+        "Step 3: This implies that knowing side lengths does not allow triangle type determination.",
+    )
+    return negative.replace("†Answer: A", "†Answer: B")
+
+
 def main():
     args = parse_args()
 
-    mmathcot_path = Path(args.mmathcot_path)
-    dualmath_path = Path(args.dualmath_path)
-    image_root = Path(args.image_root)
-    fallback_image = Path(args.fallback_image)
-    output_dir = Path(args.output_dir)
+    mmathcot_path = Path(args.mmathcot_path).resolve()
+    dualmath_path = Path(args.dualmath_path).resolve()
+    image_root = Path(args.image_root).resolve()
+    fallback_image = Path(args.fallback_image).resolve()
+    output_dir = Path(args.output_dir).resolve()
 
     if not mmathcot_path.exists():
         raise FileNotFoundError(f"MMathCoT file not found: {mmathcot_path}")
@@ -156,12 +164,33 @@ def main():
     prm_manifest_path = output_dir / "mmathcot_prm_compat.jsonl"
     prm_manifest_row = {
         "input": prepare_input(question, mmathcot_raw["output"]),
-        "image": image_meta["image_field"],
+        "image": image_meta["resolved_image_path"],
         "label": 1,
         "ground_truth": ground_truth,
         "raw_image_url": mmathcot_raw["image_url"],
     }
     write_jsonl(prm_manifest_path, [prm_manifest_row])
+
+    prm_pair_manifest_path = output_dir / "mmathcot_prm_pair_compat.jsonl"
+    prm_pair_rows = [
+        {
+            "input": prepare_input(question, mmathcot_raw["output"]),
+            "image": image_meta["resolved_image_path"],
+            "label": 1,
+            "candidate": "positive",
+            "ground_truth": ground_truth,
+            "raw_image_url": mmathcot_raw["image_url"],
+        },
+        {
+            "input": prepare_input(question, build_negative_response(mmathcot_raw["output"])),
+            "image": image_meta["resolved_image_path"],
+            "label": 0,
+            "candidate": "negative",
+            "ground_truth": ground_truth,
+            "raw_image_url": mmathcot_raw["image_url"],
+        },
+    ]
+    write_jsonl(prm_pair_manifest_path, prm_pair_rows)
 
     input_data, origin_data = prepare_data(
         dataset="mathvista",
@@ -197,8 +226,16 @@ def main():
         },
         "prm_loader_demo": {
             "compat_manifest_path": str(prm_manifest_path),
+            "pair_manifest_path": str(prm_pair_manifest_path),
+            "resolved_image_path": prm_manifest_row["image"],
             "prepared_input_preview": preview(prm_manifest_row["input"]),
             "label": prm_manifest_row["label"],
+        },
+        "prm_pair_demo": {
+            "pair_count": len(prm_pair_rows),
+            "candidate_order": [row["candidate"] for row in prm_pair_rows],
+            "expected_selected_label": 1,
+            "negative_input_preview": preview(prm_pair_rows[1]["input"]),
         },
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
