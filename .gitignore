@@ -1,5 +1,6 @@
 .idea
 checkpoints/
+datasets/
 
 # Python cache / compiled files
 __pycache__/
