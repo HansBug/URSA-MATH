@@ -132,7 +132,7 @@ We observe two highly significant conclusions from Figure 4: **(i)** *High susce
 The findings above confirm the consideration that flaws in the reward function are amplified when scalar process rewards serve as the optimization target [55, 33]. We ask “Which internal signals of PRM can be trusted?” We employ two views to investigate the reliable region of the PRM: first, the BoN performance during online learning, and second, the PRM’s error identification capability. Regarding the latter, we introduce the concept of a *“drop-moment”* within the PRM’s reward sequence, which signifies that the PRM questions the validity of the preceding steps. Specifically, for a given solution’s PRM reward sequence $\{r_{p1}^{i},r_{p2}^{i},\cdots,r_{pN}^{i}\}$, a significant decrease in reward between consecutive steps indicates the occurrence of such a drop-moment.
 
 $$
-\delta_{p}^{i}=\max\left\{\frac{r_{p,j}^{i}-r_{p,j+1}^{i}}{r_{p,j}^{i}}\middle|j=0,1,\dots,N-1\right\}>\rho
+\delta_{p}^{i}=\max\left\{\frac{r_{p,j}^{i}-r_{p,j+1}^{i}}{r_{p,j}^{i}} \mid j=0,1,\dots,N-1\right\}>\rho
 $$
 <div align="right">(5)</div>
 
