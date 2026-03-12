@@ -52,7 +52,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output-dir",
-        default=str(REPO_ROOT / "datasets" / "URSA-MATH" / "_example_manifests"),
+        default=str(REPO_ROOT / "tmp" / "dataset_load_checks" / "example_manifests"),
         help="Where to write compatibility jsonl files.",
     )
     return parser.parse_args()

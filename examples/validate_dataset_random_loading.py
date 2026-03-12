@@ -16,6 +16,12 @@ if str(REPO_ROOT) not in sys.path:
 from inference.vllm_infer import prepare_data
 
 
+EMPTY_QUESTION_FALLBACK = (
+    "Please solve the math problem shown in the image step by step and provide the final answer."
+)
+MISSING_GROUND_TRUTH_FALLBACK = "[missing-ground-truth]"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
@@ -41,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=5000,
+        default=10000,
         help="Number of random rows to sample from each dataset when --mode=sample.",
     )
     parser.add_argument(
@@ -52,7 +58,7 @@ def parse_args():
     )
     parser.add_argument(
         "--output-dir",
-        default=str(REPO_ROOT / "datasets" / "URSA-MATH" / "_loader_validation"),
+        default=str(REPO_ROOT / "tmp" / "dataset_load_checks" / "random_loading"),
         help="Where to write sampled manifests and the validation summary.",
     )
     parser.add_argument(
@@ -67,20 +73,28 @@ def parse_args():
     return parser.parse_args()
 
 
-def extract_question(instruction: str) -> str:
+def extract_question(instruction: str):
     marker = "Question:"
     index = instruction.find(marker)
     if index == -1:
-        return instruction.strip()
-    return instruction[index + len(marker) :].strip()
+        question = instruction.strip()
+        return question, False
+    question = instruction[index + len(marker) :].strip()
+    if question:
+        return question, False
+    return EMPTY_QUESTION_FALLBACK, True
 
 
-def extract_answer(output: str) -> str:
+def extract_answer(output: str):
     marker = "†Answer:"
     index = output.rfind(marker)
     if index == -1:
-        return output.strip()
-    return output[index + len(marker) :].strip()
+        answer = output.strip()
+        return answer, False
+    answer = output[index + len(marker) :].strip()
+    if answer:
+        return answer, False
+    return MISSING_GROUND_TRUTH_FALLBACK, True
 
 
 def write_jsonl(path: Path, rows):
@@ -144,6 +158,8 @@ def validate_mmathcot(rows_to_check, image_root: Path, output_dir: Path, manifes
     dataset_name = "MMathCoT-1M"
     compat_rows = []
     image_sizes = []
+    empty_question_fallback_rows = []
+    missing_ground_truth_rows = []
     for sampled in rows_to_check:
         source_index = sampled["source_index"]
         row = sampled["row"]
@@ -152,10 +168,14 @@ def validate_mmathcot(rows_to_check, image_root: Path, output_dir: Path, manifes
         image_path = image_root / row["image_url"]
         require_exists_isfile(image_path, dataset_name, source_index)
         image_sizes.append(require_openable_image(image_path, dataset_name, source_index))
-        question = extract_question(row["instruction"])
-        ground_truth = extract_answer(row["output"])
+        question, used_fallback = extract_question(row["instruction"])
+        ground_truth, used_ground_truth_fallback = extract_answer(row["output"])
         require_non_empty_str(question, "question", dataset_name, source_index)
         require_non_empty_str(ground_truth, "ground_truth", dataset_name, source_index)
+        if used_fallback:
+            empty_question_fallback_rows.append(source_index)
+        if used_ground_truth_fallback:
+            missing_ground_truth_rows.append(source_index)
         compat_rows.append(
             {
                 "question": question,
@@ -210,6 +230,12 @@ def validate_mmathcot(rows_to_check, image_root: Path, output_dir: Path, manifes
         "image_check": "os.path.exists + os.path.isfile + PIL.Image.open",
         "first_image_size": image_sizes[0],
         "first_source_index": compat_rows[0]["source_index"],
+        "empty_question_fallback_count": len(empty_question_fallback_rows),
+        "empty_question_fallback_examples": empty_question_fallback_rows[:20],
+        "empty_question_fallback_prompt": EMPTY_QUESTION_FALLBACK,
+        "missing_ground_truth_count": len(missing_ground_truth_rows),
+        "missing_ground_truth_examples": missing_ground_truth_rows[:20],
+        "missing_ground_truth_placeholder": MISSING_GROUND_TRUTH_FALLBACK,
     }
 
 

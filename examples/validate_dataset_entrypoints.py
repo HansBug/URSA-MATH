@@ -36,7 +36,7 @@ def parse_args():
     )
     parser.add_argument(
         "--work-dir",
-        default=str(REPO_ROOT / "datasets" / "URSA-MATH" / "_loader_validation"),
+        default=str(REPO_ROOT / "tmp" / "dataset_load_checks" / "entrypoints"),
         help="Where to write manifests, outputs, and validation summaries.",
     )
     parser.add_argument(

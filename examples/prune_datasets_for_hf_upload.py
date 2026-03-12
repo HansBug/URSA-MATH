@@ -2,7 +2,6 @@ import argparse
 import os
 import random
 import shutil
-import sys
 from pathlib import Path
 
 import jsonlines
@@ -36,7 +35,7 @@ def parse_args():
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=5000,
+        default=10000,
         help="Random sample size used by the documented validation script.",
     )
     parser.add_argument(
@@ -77,6 +76,14 @@ def read_all_image_rows(path: Path):
         for index, item in enumerate(jsonlines.Reader(fp)):
             rows.append({"source_index": index, "image_url": item["image_url"]})
     return rows
+
+
+def read_image_url_at_index(path: Path, wanted_index: int):
+    with path.open("r", encoding="utf-8") as fp:
+        for index, item in enumerate(jsonlines.Reader(fp)):
+            if index == wanted_index:
+                return {"source_index": index, "image_url": item["image_url"]}
+    raise IndexError(f"{path} does not contain source_index={wanted_index}")
 
 
 def collect_prefix_check_images(path: Path):
@@ -148,17 +155,6 @@ def prune_and_restore(image_root: Path, keep_physical_paths, stage_root: Path):
             (image_root / root_name).mkdir(parents=True, exist_ok=True)
     shutil.rmtree(stage_root)
 
-
-def prune_jsonl_rows(path: Path, keep_indices):
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with path.open("r", encoding="utf-8") as src, tmp_path.open("w", encoding="utf-8") as dst:
-        writer = jsonlines.Writer(dst)
-        for index, item in enumerate(jsonlines.Reader(src)):
-            if index in keep_indices:
-                writer.write(item)
-    tmp_path.replace(path)
-
-
 def main():
     args = parse_args()
     mmathcot_path = Path(args.mmathcot_path).resolve()
@@ -176,30 +172,14 @@ def main():
         args.seed + 1,
     )
     prefix_images = collect_prefix_check_images(mmathcot_path)
+    mmathcot_sample0 = read_image_url_at_index(mmathcot_path, 0)
+    dualmath_sample0 = read_image_url_at_index(dualmath_path, 0)
 
-    # Keep the current already-pruned subset stable on repeated runs.
-    if mmathcot_total <= args.sample_size + len(prefix_images):
-        mmathcot_rows_to_keep = read_all_image_rows(mmathcot_path)
-    else:
-        mmathcot_rows_to_keep = mmathcot_sample
-
-    if dualmath_total <= args.sample_size + 1:
-        dualmath_rows_to_keep = read_all_image_rows(dualmath_path)
-    else:
-        dualmath_rows_to_keep = dualmath_sample
-
-    mmathcot_keep_indices = keep_source_indices(mmathcot_rows_to_keep)
-    mmathcot_keep_indices.update(item["source_index"] for item in prefix_images.values())
-    mmathcot_keep_indices.add(0)
-
-    dualmath_keep_indices = keep_source_indices(dualmath_rows_to_keep)
-    dualmath_keep_indices.add(0)
-
-    keep_logical = set(item["image_url"] for item in mmathcot_rows_to_keep)
-    keep_logical.update(item["image_url"] for item in dualmath_rows_to_keep)
+    keep_logical = set(item["image_url"] for item in mmathcot_sample)
+    keep_logical.update(item["image_url"] for item in dualmath_sample)
     keep_logical.update(item["image_url"] for item in prefix_images.values())
-    keep_logical.add("Mavis_Extra/meta_gen/textbook_collect_1220-100_170.png")
-    keep_logical.add("MathV-360k/Geometry3K/images/454.png")
+    keep_logical.add(mmathcot_sample0["image_url"])
+    keep_logical.add(dualmath_sample0["image_url"])
 
     keep_physical = {logical_to_physical(path) for path in keep_logical}
     missing = [str(path) for path in sorted(keep_physical) if not (image_root / path).is_file()]
@@ -210,6 +190,10 @@ def main():
         )
 
     archive_paths = sorted((mmathcot_path.parent).glob("*.7z"))
+    source_archives = [
+        REPO_ROOT / "datasets" / "_sources" / "MathV360K" / "data_images.zip",
+        REPO_ROOT / "datasets" / "_sources" / "multimath-300k" / "images.zip",
+    ]
     cache_paths = [
         mmathcot_path.parent / ".cache",
         dualmath_path.parent / ".cache",
@@ -217,20 +201,31 @@ def main():
     generated_dirs = [
         REPO_ROOT / "datasets" / "URSA-MATH" / "_example_manifests",
         REPO_ROOT / "datasets" / "URSA-MATH" / "_loader_validation",
+        REPO_ROOT / "tmp" / "dataset_load_checks",
+    ]
+    source_dirs = [
+        REPO_ROOT / "datasets" / "_sources" / "MathV360K",
+        REPO_ROOT / "datasets" / "_sources" / "multimath-300k",
     ]
 
     print(f"keep logical images: {len(keep_logical)}")
     print(f"keep physical files: {len(keep_physical)}")
-    print(f"keep MMathCoT rows: {len(mmathcot_keep_indices)}")
-    print(f"keep DualMath rows: {len(dualmath_keep_indices)}")
+    print(f"keep MMathCoT rows: full jsonl retained ({mmathcot_total})")
+    print(f"keep DualMath rows: full jsonl retained ({dualmath_total})")
     print("archives to remove:")
     for path in archive_paths:
+        print(f"  {path}")
+    print("source archives to remove:")
+    for path in source_archives:
         print(f"  {path}")
     print("cache directories to remove:")
     for path in cache_paths:
         print(f"  {path}")
     print("generated directories to clean:")
     for path in generated_dirs:
+        print(f"  {path}")
+    print("source directories to remove after archive deletion:")
+    for path in source_dirs:
         print(f"  {path}")
 
     if not args.apply:
@@ -242,10 +237,14 @@ def main():
         shutil.rmtree(stage_root)
     stage_root.mkdir(parents=True, exist_ok=True)
     prune_and_restore(image_root, keep_physical, stage_root)
-    prune_jsonl_rows(mmathcot_path, mmathcot_keep_indices)
-    prune_jsonl_rows(dualmath_path, dualmath_keep_indices)
+
+    for marker in image_root.glob("*.extract.ok"):
+        marker.unlink()
 
     for path in archive_paths:
+        if path.exists():
+            path.unlink()
+    for path in source_archives:
         if path.exists():
             path.unlink()
     for path in cache_paths:
@@ -254,7 +253,23 @@ def main():
     for directory in generated_dirs:
         if directory.exists():
             shutil.rmtree(directory)
-            directory.mkdir(parents=True, exist_ok=True)
+    for directory in source_dirs:
+        if directory.exists():
+            shutil.rmtree(directory)
+
+    mathv_link = image_root / "MathV-360k"
+    if mathv_link.exists() or mathv_link.is_symlink():
+        mathv_link.unlink()
+    mathv_link.symlink_to("data_images")
+
+    multimath_dir = image_root / "Multimath"
+    if multimath_dir.exists() and multimath_dir.is_symlink():
+        multimath_dir.unlink()
+    multimath_dir.mkdir(exist_ok=True)
+    multimath_link = multimath_dir / "RGB_images"
+    if multimath_link.exists() or multimath_link.is_symlink():
+        multimath_link.unlink()
+    multimath_link.symlink_to("../RGB_images")
 
     print("prune completed")
 
