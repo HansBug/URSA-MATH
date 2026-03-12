@@ -246,7 +246,10 @@ datasets/URSA-MATH/
 │   ├── mmathcot_prm_compat.jsonl
 │   └── mmathcot_prm_pair_compat.jsonl
 ├── _loader_validation/                  # 跑 examples/validate_dataset_entrypoints.py 后生成
+│   ├── dataset_random_loading_summary.json
+│   ├── dualmath_prm_random1000.jsonl
 │   ├── mmathcot_mathvista_compat_sample0.jsonl
+│   ├── mmathcot_mathvista_random1000.jsonl
 │   ├── mmathcot_prm_pair_sample0_abs_image.jsonl
 │   ├── mmathcot_prm_pair_sample0_abs_image_avg_sampling8.pt
 │   ├── mmathcot_prm_pair_sample0_abs_image_min_sampling8.pt
@@ -393,6 +396,64 @@ PY
 ```
 
 只要这里 6 个前缀的 `exists` 都是 `true`，就说明你的 images 路径已经配到可以直接给现有脚本用的程度。
+
+### 4.1 随机抽样 1000 条做真正加载检查
+
+上面这些检查解决的是「目录结构有没有配对」。如果你要验证「两个数据集都能被现有 loader 兼容逻辑稳定吃到，而且字段完全对齐、图片条条都在」，只看 1 条样本是不够的。
+
+我新增了一个 example 脚本：
+
+- [examples/validate_dataset_random_loading.py](/home/ubuntu/URSA-MATH/examples/validate_dataset_random_loading.py)
+
+它会对两个数据集分别做随机抽样：
+
+- `MMathCoT-1M` 随机抽 1000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 1000 条 `mathvista` 兼容 manifest，最后真走一遍 `prepare_data(dataset="mathvista", ...)`
+- `DualMath-1.1M` 随机抽 1000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 1000 条 `prm_infer_score.py` `.jsonl` 兼容 manifest，字段要求是 `input`、`image`、`label`
+- 两边都会逐条做 `os.path.exists(path)` 和 `os.path.isfile(path)`，并且再用 `PIL.Image.open(path)` 确认图片真的可打开
+
+直接运行：
+
+```bash
+python examples/validate_dataset_random_loading.py --sample-size 1000
+```
+
+它会把结果写到：
+
+- `datasets/URSA-MATH/_loader_validation/mmathcot_mathvista_random1000.jsonl`
+- `datasets/URSA-MATH/_loader_validation/dualmath_prm_random1000.jsonl`
+- `datasets/URSA-MATH/_loader_validation/dataset_random_loading_summary.json`
+
+通过标准就是下面 6 条同时满足：
+
+1. `sample_size_requested == 1000`
+2. `mmathcot_policy_check.sampled_rows == 1000`
+3. `dualmath_prm_check.sampled_rows == 1000`
+4. 两边的 `required_fields_checked` 全部检查通过
+5. 两边所有图片都满足 `os.path.exists + os.path.isfile + PIL.Image.open`
+6. `status == "passed"`
+
+2026-03-12 在这台机器上的实测结果是：
+
+- `MMathCoT-1M` 总行数 `1019059`，随机抽样 `1000` 条全部通过
+- `DualMath-1.1M` 总行数 `1100779`，随机抽样 `1000` 条全部通过
+- 最终 `dataset_random_loading_summary.json` 里的 `status` 是 `passed`
+
+如果你只想快速复核 summary，可以直接跑：
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("datasets/URSA-MATH/_loader_validation/dataset_random_loading_summary.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+print("status =", data["status"])
+print("mmathcot sampled =", data["mmathcot_policy_check"]["sampled_rows"])
+print("dualmath sampled =", data["dualmath_prm_check"]["sampled_rows"])
+print("mmathcot manifest =", data["mmathcot_policy_check"]["manifest_path"])
+print("dualmath manifest =", data["dualmath_prm_check"]["manifest_path"])
+PY
+```
 
 ## 5. 不改 inference/model，怎么让现有 loader 直接吃到数据
 
