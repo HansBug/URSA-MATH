@@ -223,35 +223,36 @@ PY
 
 ### 3.4 完整的 datasets 路径配置（含软链）
 
-跑完前面的下载、解压、软链和本文后面的 example/validation 命令后，推荐你把 `datasets/URSA-MATH` 维持成下面这个结构。这里把软链显式标出来了：
+如果你准备上传一个“只保留文档里已知测试所需数据”的精简版，`datasets/URSA-MATH` 最终可以维持成下面这个结构。这里把软链显式标出来了：
 
 ```text
 datasets/URSA-MATH/
 ├── DualMath-1.1M/
-│   ├── .cache/
-│   │   └── huggingface/
 │   ├── README.md
 │   └── train.jsonl
 ├── MMathCoT-1M/
-│   ├── .cache/
-│   │   └── huggingface/
-│   ├── DataEngine_Geometry.7z
-│   ├── Geo170K.7z
-│   ├── Mavis_Extra.7z
 │   ├── README.md
-│   ├── VarsityTutors.7z
 │   └── train.jsonl
 ├── _example_manifests/
 │   ├── mmathcot_mathvista_compat.jsonl
 │   ├── mmathcot_prm_compat.jsonl
 │   └── mmathcot_prm_pair_compat.jsonl
-├── _loader_validation/                  # 跑 examples/validate_dataset_entrypoints.py 后生成
+├── _loader_validation/                  # 跑本文验证脚本后生成
+│   ├── dataset_all_loading_summary.json
 │   ├── dataset_random_loading_summary.json
-│   ├── dualmath_prm_random1000.jsonl
+│   ├── dualmath_prm_all.jsonl
+│   ├── dualmath_prm_random5000.jsonl
+│   ├── mmathcot_mathvista_all.jsonl
 │   ├── mmathcot_mathvista_compat_sample0.jsonl
-│   ├── mmathcot_mathvista_random1000.jsonl
+│   ├── mmathcot_mathvista_random5000.jsonl
 │   ├── mmathcot_prm_pair_sample0_abs_image.jsonl
+│   ├── mmathcot_prm_pair_sample0_abs_image_avg_sampling16.pt
+│   ├── mmathcot_prm_pair_sample0_abs_image_avg_sampling32.pt
+│   ├── mmathcot_prm_pair_sample0_abs_image_avg_sampling64.pt
 │   ├── mmathcot_prm_pair_sample0_abs_image_avg_sampling8.pt
+│   ├── mmathcot_prm_pair_sample0_abs_image_min_sampling16.pt
+│   ├── mmathcot_prm_pair_sample0_abs_image_min_sampling32.pt
+│   ├── mmathcot_prm_pair_sample0_abs_image_min_sampling64.pt
 │   ├── mmathcot_prm_pair_sample0_abs_image_min_sampling8.pt
 │   └── vllm_policy_stub.jsonl
 └── images/
@@ -269,14 +270,22 @@ datasets/URSA-MATH/
     ├── Mavis_Extra.extract.ok
     ├── VarsityTutors/
     ├── VarsityTutors.extract.ok
-    ├── data_images/                     # MathV360K 上游 zip 解压出的真实目录
+    ├── data_images/                     # 只保留测试命中的 MathV360K 图片
     ├── MathV-360k -> data_images/       # 软链，给 raw image_url 前缀用
     ├── MathV-360k.extract.ok
-    ├── RGB_images/                      # multimath-300k 上游 zip 解压出的真实目录
+    ├── RGB_images/                      # 只保留测试命中的 Multimath 图片
     ├── Multimath/
     │   └── RGB_images -> ../RGB_images/ # 软链，给 raw image_url 前缀用
     └── Multimath.extract.ok
 ```
+
+当前这份仓库数据不是完整图像语料，而是“文档已知测试最小保留集”：
+
+- 保留的是裁剪后的 raw 标注：`MMathCoT-1M/train.jsonl` 当前 `5006` 行，`DualMath-1.1M/train.jsonl` 当前 `5001` 行
+- 保留了 sample 0、prefix 检查、入口点验证，以及随机抽样 `5000 + 5000` 会命中的所有图片
+- 删除了 `MMathCoT-1M/*.7z`、两个 `.cache/`，以及不再会被这些测试命中的其余图片
+
+如果你后面要跑超出本文范围的任意样本、或者恢复完整 raw 数据集，需要重新按前面的下载步骤把完整图片语料和原始 `train.jsonl` 拉回来。
 
 两个最容易配错的地方：
 
@@ -397,7 +406,7 @@ PY
 
 只要这里 6 个前缀的 `exists` 都是 `true`，就说明你的 images 路径已经配到可以直接给现有脚本用的程度。
 
-### 4.1 随机抽样 1000 条做真正加载检查
+### 4.1 随机抽样 5000 条与全量做真正加载检查
 
 上面这些检查解决的是「目录结构有没有配对」。如果你要验证「两个数据集都能被现有 loader 兼容逻辑稳定吃到，而且字段完全对齐、图片条条都在」，只看 1 条样本是不够的。
 
@@ -407,53 +416,129 @@ PY
 
 它会对两个数据集分别做随机抽样：
 
-- `MMathCoT-1M` 随机抽 1000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 1000 条 `mathvista` 兼容 manifest，最后真走一遍 `prepare_data(dataset="mathvista", ...)`
-- `DualMath-1.1M` 随机抽 1000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 1000 条 `prm_infer_score.py` `.jsonl` 兼容 manifest，字段要求是 `input`、`image`、`label`
+- `MMathCoT-1M` 随机抽 5000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 5000 条 `mathvista` 兼容 manifest，最后真走一遍 `prepare_data(dataset="mathvista", ...)`
+- `DualMath-1.1M` 随机抽 5000 条，检查 raw 字段 `image_url`、`instruction`、`output`，再生成 5000 条 `prm_infer_score.py` `.jsonl` 兼容 manifest，字段要求是 `input`、`image`、`label`
 - 两边都会逐条做 `os.path.exists(path)` 和 `os.path.isfile(path)`，并且再用 `PIL.Image.open(path)` 确认图片真的可打开
 
-直接运行：
+默认是随机抽样 5000 条，直接运行：
 
 ```bash
-python examples/validate_dataset_random_loading.py --sample-size 1000
+python examples/validate_dataset_random_loading.py
 ```
 
 它会把结果写到：
 
-- `datasets/URSA-MATH/_loader_validation/mmathcot_mathvista_random1000.jsonl`
-- `datasets/URSA-MATH/_loader_validation/dualmath_prm_random1000.jsonl`
+- `datasets/URSA-MATH/_loader_validation/mmathcot_mathvista_random5000.jsonl`
+- `datasets/URSA-MATH/_loader_validation/dualmath_prm_random5000.jsonl`
 - `datasets/URSA-MATH/_loader_validation/dataset_random_loading_summary.json`
 
 通过标准就是下面 6 条同时满足：
 
-1. `sample_size_requested == 1000`
-2. `mmathcot_policy_check.sampled_rows == 1000`
-3. `dualmath_prm_check.sampled_rows == 1000`
+1. `sample_size_requested == 5000`
+2. `mmathcot_policy_check.sampled_rows == 5000`
+3. `dualmath_prm_check.sampled_rows == 5000`
 4. 两边的 `required_fields_checked` 全部检查通过
 5. 两边所有图片都满足 `os.path.exists + os.path.isfile + PIL.Image.open`
 6. `status == "passed"`
 
+如果你要检查“当前这份精简上传版里是否还有任何漏图/坏图/字段不齐”，直接跑 `all` 模式：
+
+```bash
+python examples/validate_dataset_random_loading.py --mode all
+```
+
+它会把结果写到：
+
+- `datasets/URSA-MATH/_loader_validation/mmathcot_mathvista_all.jsonl`
+- `datasets/URSA-MATH/_loader_validation/dualmath_prm_all.jsonl`
+- `datasets/URSA-MATH/_loader_validation/dataset_all_loading_summary.json`
+
+`all` 模式的通过标准是下面 6 条同时满足：
+
+1. `mmathcot_policy_check.rows_checked == mmathcot_policy_check.dataset_total_rows`
+2. `dualmath_prm_check.rows_checked == dualmath_prm_check.dataset_total_rows`
+3. 两边的 `required_fields_checked` 全部检查通过
+4. 两边所有图片都满足 `os.path.exists + os.path.isfile`
+5. 两边所有图片都能被 `PIL.Image.open` 打开
+6. `status == "passed"`
+
 2026-03-12 在这台机器上的实测结果是：
 
-- `MMathCoT-1M` 总行数 `1019059`，随机抽样 `1000` 条全部通过
-- `DualMath-1.1M` 总行数 `1100779`，随机抽样 `1000` 条全部通过
-- 最终 `dataset_random_loading_summary.json` 里的 `status` 是 `passed`
+- 随机抽样模式下，`MMathCoT-1M` 当前总行数 `5006`，随机抽样 `5000` 条全部通过
+- 随机抽样模式下，`DualMath-1.1M` 当前总行数 `5001`，随机抽样 `5000` 条全部通过
+- 全量模式下，`MMathCoT-1M` 实际检查 `5006 / 5006` 条，`DualMath-1.1M` 实际检查 `5001 / 5001` 条，全部通过
+- `dataset_random_loading_summary.json` 和 `dataset_all_loading_summary.json` 里的 `status` 都是 `passed`
 
-如果你只想快速复核 summary，可以直接跑：
+如果你只想快速复核两个 summary，可以直接跑：
 
 ```bash
 python - <<'PY'
 import json
 from pathlib import Path
 
-path = Path("datasets/URSA-MATH/_loader_validation/dataset_random_loading_summary.json")
-data = json.loads(path.read_text(encoding="utf-8"))
-print("status =", data["status"])
-print("mmathcot sampled =", data["mmathcot_policy_check"]["sampled_rows"])
-print("dualmath sampled =", data["dualmath_prm_check"]["sampled_rows"])
-print("mmathcot manifest =", data["mmathcot_policy_check"]["manifest_path"])
-print("dualmath manifest =", data["dualmath_prm_check"]["manifest_path"])
+for name in [
+    "dataset_random_loading_summary.json",
+    "dataset_all_loading_summary.json",
+]:
+    path = Path("datasets/URSA-MATH/_loader_validation") / name
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(name)
+    print("  mode =", data["mode"])
+    print("  status =", data["status"])
+    print("  mmathcot rows_checked =", data["mmathcot_policy_check"]["rows_checked"])
+    print("  mmathcot total =", data["mmathcot_policy_check"]["dataset_total_rows"])
+    print("  dualmath rows_checked =", data["dualmath_prm_check"]["rows_checked"])
+    print("  dualmath total =", data["dualmath_prm_check"]["dataset_total_rows"])
 PY
 ```
+
+### 4.2 上传前精简脚本
+
+如果你要把当前这份“只保留文档里已知测试所需数据”的精简版上传到 Hugging Face，可以直接用：
+
+- [examples/prune_datasets_for_hf_upload.py](/home/ubuntu/URSA-MATH/examples/prune_datasets_for_hf_upload.py)
+
+它会按照本文当前的测试口径保留：
+
+- `5000` 条 `MMathCoT-1M` 随机抽样命中的图片
+- `5000` 条 `DualMath-1.1M` 随机抽样命中的图片
+- sample 0、prefix 检查、入口点验证额外命中的图片
+
+并删除：
+
+- `MMathCoT-1M/*.7z`
+- `MMathCoT-1M/.cache/`
+- `DualMath-1.1M/.cache/`
+- 原始 `train.jsonl` 中不再会被这些测试命中的其余行
+- 其余不会再被这些测试命中的图片
+- 可重新生成的 `_example_manifests/` 和 `_loader_validation/` 内容
+
+先看 dry-run：
+
+```bash
+python examples/prune_datasets_for_hf_upload.py
+```
+
+真正执行：
+
+```bash
+python examples/prune_datasets_for_hf_upload.py --apply
+```
+
+2026-03-12 在这台机器上的实际清理结果是：
+
+- 当前重新跑完本文所有验证后，`datasets/URSA-MATH` 总大小约 `812M`
+- 其中 `datasets/URSA-MATH/images` 约 `763M`
+- `images/` 下文件总数（含 `.extract.ok` 标记文件）是 `9705`，真正会被 loader 命中的物理图片是 `9699`
+- 当前裁剪后的 `MMathCoT-1M/train.jsonl` 是 `5006` 行，`DualMath-1.1M/train.jsonl` 是 `5001` 行
+
+清理完成后，我已经重新跑过本文里现有的已知检查：
+
+- 6 个前缀的 `exists` / `is_file` 全部为 `true`
+- `python examples/run_dataset_loading_example.py --image-root datasets/URSA-MATH/images` 跑通
+- `python examples/validate_dataset_entrypoints.py --policy-mode auto` 跑通
+- `python examples/validate_dataset_random_loading.py` 在 `5000 + 5000` 抽样下仍然是 `passed`
+- `python examples/validate_dataset_random_loading.py --mode all` 在当前 `5006 + 5001` 全量下也是 `passed`
 
 ## 5. 不改 inference/model，怎么让现有 loader 直接吃到数据
 

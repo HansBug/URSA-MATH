@@ -19,8 +19,8 @@ from inference.vllm_infer import prepare_data
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Randomly sample rows from MMathCoT-1M and DualMath-1.1M, "
-            "then validate field completeness, image existence, and loader compatibility."
+            "Validate MMathCoT-1M and DualMath-1.1M for field completeness, "
+            "image existence, and loader compatibility."
         )
     )
     parser.add_argument(
@@ -41,8 +41,8 @@ def parse_args():
     parser.add_argument(
         "--sample-size",
         type=int,
-        default=1000,
-        help="Number of random rows to sample from each dataset.",
+        default=5000,
+        help="Number of random rows to sample from each dataset when --mode=sample.",
     )
     parser.add_argument(
         "--seed",
@@ -54,6 +54,15 @@ def parse_args():
         "--output-dir",
         default=str(REPO_ROOT / "datasets" / "URSA-MATH" / "_loader_validation"),
         help="Where to write sampled manifests and the validation summary.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["sample", "all"],
+        default="sample",
+        help=(
+            "'sample' validates a random subset of size --sample-size. "
+            "'all' validates every current row in both train.jsonl files."
+        ),
     )
     return parser.parse_args()
 
@@ -101,6 +110,14 @@ def reservoir_sample_jsonl(path: Path, sample_size: int, rng: random.Random):
     return sample, total
 
 
+def read_all_jsonl_rows(path: Path):
+    rows = []
+    with path.open("r", encoding="utf-8") as fp:
+        for index, item in enumerate(jsonlines.Reader(fp)):
+            rows.append({"source_index": index, "row": item})
+    return rows, len(rows)
+
+
 def require_non_empty_str(value, field_name, dataset_name, source_index):
     if not isinstance(value, str) or not value.strip():
         raise AssertionError(
@@ -123,11 +140,11 @@ def require_openable_image(path: Path, dataset_name, source_index):
     return [width, height]
 
 
-def validate_mmathcot(sampled_rows, image_root: Path, output_dir: Path):
+def validate_mmathcot(rows_to_check, image_root: Path, output_dir: Path, manifest_tag: str):
     dataset_name = "MMathCoT-1M"
     compat_rows = []
     image_sizes = []
-    for sampled in sampled_rows:
+    for sampled in rows_to_check:
         source_index = sampled["source_index"]
         row = sampled["row"]
         for field_name in ["image_url", "instruction", "output"]:
@@ -151,7 +168,7 @@ def validate_mmathcot(sampled_rows, image_root: Path, output_dir: Path):
             }
         )
 
-    manifest_path = output_dir / "mmathcot_mathvista_random1000.jsonl"
+    manifest_path = output_dir / f"mmathcot_mathvista_{manifest_tag}.jsonl"
     write_jsonl(manifest_path, compat_rows)
     input_data, origin_data = prepare_data(
         dataset="mathvista",
@@ -204,11 +221,11 @@ def derive_dualmath_label(output: str) -> int:
     return 1 if neg_count == 0 and pos_count > 0 else 0
 
 
-def validate_dualmath(sampled_rows, image_root: Path, output_dir: Path):
+def validate_dualmath(rows_to_check, image_root: Path, output_dir: Path, manifest_tag: str):
     dataset_name = "DualMath-1.1M"
     compat_rows = []
     image_sizes = []
-    for sampled in sampled_rows:
+    for sampled in rows_to_check:
         source_index = sampled["source_index"]
         row = sampled["row"]
         for field_name in ["image_url", "instruction", "output"]:
@@ -234,7 +251,7 @@ def validate_dualmath(sampled_rows, image_root: Path, output_dir: Path):
             raise AssertionError(f"{dataset_name}[{source_index}] label must be 0 or 1")
         compat_rows.append(compat_row)
 
-    manifest_path = output_dir / "dualmath_prm_random1000.jsonl"
+    manifest_path = output_dir / f"dualmath_prm_{manifest_tag}.jsonl"
     write_jsonl(manifest_path, compat_rows)
 
     loaded_rows = []
@@ -281,38 +298,62 @@ def main():
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rng_mmath = random.Random(args.seed)
-    rng_dualmath = random.Random(args.seed + 1)
-
-    mmathcot_sampled, mmathcot_total = reservoir_sample_jsonl(mmathcot_path, args.sample_size, rng_mmath)
-    dualmath_sampled, dualmath_total = reservoir_sample_jsonl(dualmath_path, args.sample_size, rng_dualmath)
-
-    mmathcot_result = attach_total_rows(
-        validate_mmathcot(mmathcot_sampled, image_root, output_dir),
-        mmathcot_total,
-    )
-    dualmath_result = attach_total_rows(
-        validate_dualmath(dualmath_sampled, image_root, output_dir),
-        dualmath_total,
-    )
-
-    summary = {
-        "seed": args.seed,
-        "sample_size_requested": args.sample_size,
-        "pass_criteria": [
+    if args.mode == "sample":
+        rng_mmath = random.Random(args.seed)
+        rng_dualmath = random.Random(args.seed + 1)
+        mmathcot_rows, mmathcot_total = reservoir_sample_jsonl(mmathcot_path, args.sample_size, rng_mmath)
+        dualmath_rows, dualmath_total = reservoir_sample_jsonl(dualmath_path, args.sample_size, rng_dualmath)
+        mmathcot_tag = f"random{args.sample_size}"
+        dualmath_tag = f"random{args.sample_size}"
+        pass_criteria = [
             "sampled_rows == sample_size_requested",
             "required fields are non-empty and fully present",
             "every referenced image satisfies os.path.exists(path) and os.path.isfile(path)",
             "every sampled image can be opened by PIL.Image.open",
             "MMathCoT compatibility manifest can be loaded by prepare_data(dataset='mathvista')",
             "DualMath compatibility manifest satisfies prm_infer_score.py jsonl field contract",
-        ],
+        ]
+        summary_name = "dataset_random_loading_summary.json"
+    else:
+        mmathcot_rows, mmathcot_total = read_all_jsonl_rows(mmathcot_path)
+        dualmath_rows, dualmath_total = read_all_jsonl_rows(dualmath_path)
+        mmathcot_tag = "all"
+        dualmath_tag = "all"
+        pass_criteria = [
+            "rows_checked == dataset_total_rows for both datasets",
+            "required fields are non-empty and fully present",
+            "every referenced image satisfies os.path.exists(path) and os.path.isfile(path)",
+            "every referenced image can be opened by PIL.Image.open",
+            "the full current MMathCoT subset can be loaded by prepare_data(dataset='mathvista')",
+            "the full current DualMath subset satisfies prm_infer_score.py jsonl field contract",
+        ]
+        summary_name = "dataset_all_loading_summary.json"
+
+    mmathcot_result = attach_total_rows(
+        validate_mmathcot(mmathcot_rows, image_root, output_dir, mmathcot_tag),
+        mmathcot_total,
+    )
+    dualmath_result = attach_total_rows(
+        validate_dualmath(dualmath_rows, image_root, output_dir, dualmath_tag),
+        dualmath_total,
+    )
+    mmathcot_result["rows_checked"] = len(mmathcot_rows)
+    dualmath_result["rows_checked"] = len(dualmath_rows)
+    if args.mode == "sample":
+        mmathcot_result["sampled_rows"] = len(mmathcot_rows)
+        dualmath_result["sampled_rows"] = len(dualmath_rows)
+
+    summary = {
+        "mode": args.mode,
+        "seed": args.seed,
+        "sample_size_requested": args.sample_size,
+        "pass_criteria": pass_criteria,
         "mmathcot_policy_check": mmathcot_result,
         "dualmath_prm_check": dualmath_result,
         "status": "passed",
     }
 
-    summary_path = output_dir / "dataset_random_loading_summary.json"
+    summary_path = output_dir / summary_name
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
