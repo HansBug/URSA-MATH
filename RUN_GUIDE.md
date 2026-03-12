@@ -176,7 +176,7 @@ python examples/run_ursa_8b_torch_example.py \
   --max-new-tokens 48
 ```
 
-## 8. 示例二：URSA-RM-8B 加载到 GPU，并输出论文第 4 阶段所需的 PRM / RL 字段
+## 8. 示例二：URSA-RM-8B 加载到 GPU，并逐 step 输出 PRM 分数
 
 示例脚本：
 
@@ -187,9 +187,9 @@ python examples/run_ursa_8b_torch_example.py \
 - 使用本仓库本地的 `UrsaForTokenClassification`
 - 从 `checkpoints/URSA-RM-8B` 加载完整权重
 - 把模型放到 GPU
-- 默认对 4 条 rollout 一起打分
-- 输出每一步的 `process_reward_sequence`
-- 输出 BoN 选择、drop-moment、PS-GRPO 奖励，以及论文附录里两个 PRM-integrated GRPO 变体的中间量
+- 复用 [inference/prm_infer_score.py](/home/ubuntu/URSA-MATH/inference/prm_infer_score.py) 里的 `prepare_input` 和 `return_score`
+- 对输入 response 里的每个 `Step N:` 逐个打分
+- 只输出 PRM 相关字段，不再输出 BoN / GRPO / drop-moment / paper metrics 相关内容
 
 ### 运行命令
 
@@ -215,117 +215,395 @@ CUDA_VISIBLE_DEVICES=2 python examples/run_ursa_rm_8b_score_example.py --device 
 How many numbered training stages are shown in this diagram?
 ```
 
-- 默认 rollout 组：
+- 默认 response：
 
 ```text
-1. 一个过程严谨、答案正确的 rollout
-2. 一个答案正确但过程出现明显下降时刻的 rollout
-3. 一个答案错误的 rollout
-4. 一个最终修正错误判断的 rollout
+Step 1: The figure explicitly labels Stage 1 as VL Alignment.
+Step 2: The top-right panel is labeled Stage 2 Math SFT.
+Step 3: The bottom-left panel is labeled Stage 3 PRM Training and Verifying.
+†Answer: 3
 ```
 
-- 默认超参数：
-  - `rho=0.3`
-  - `gamma=0.5`
-  - `ground_truth_answer=3`
+- 默认 `ground_truth_answer=3`
 
-### 输出字段如何对应论文
+### 输出字段说明
 
-- `step_scores` / `process_reward_sequence`
-  - 对应第 4 节的过程奖励序列 `{r_p1^i, r_p2^i, ...}`
-- `avg_process_reward`
-  - 对应附录 B.2 的 `mean{M_p(q, s_i)}`
-- `bon_by_mean_process_reward`
-  - 对应公式 10 的 Best-of-N 选择结果
-- `drop_moment.relative_drops` / `drop_moment.max_relative_drop`
-  - 对应公式 5 里的 `delta_p^i`
-- `paper_metrics.ps_grpo_reward`
-  - 对应公式 6 的 `R^i`
-- `paper_metrics.vanilla_grpo_advantage`
-  - 对应附录 B.1 公式 7 的组内标准化优势
-- `paper_metrics.variant1_rollout_reward` / `variant1_advantage`
-  - 对应附录 B.1 里 `r^i = r_o^i + mean(r_s^i)`
-- `paper_metrics.variant2_step_advantages`
-  - 对应附录 B.1 公式 9 的逐步优势
+- `prepared_input`
+  - 这是送进 RM 的最终文本，会保留 `prepare_input(...)` 插入的 `и` 分隔 token
+- `steps[].prm_score`
+  - 每个 step 的逐步 PRM 分数
+- `min_prm_score`
+  - 当前 response 的最小 step 分数
+- `avg_prm_score`
+  - 当前 response 的平均 step 分数
+- `step_reward_alignment_ok`
+  - 用来检查脚本提取到的 step 数量和实际打分数量是否一致
 
 说明：
 
-- 这里的 `standardization=population_std`，是为了在单 rollout 或组内奖励完全相同的情况下避免 `std=0` 产生 NaN
-- 默认示例里 `outcome_reward` 通过 `ground_truth_answer=3` 自动得到，不需要手工再传一遍
+- 顶层只保留以下元信息：
+  - `model_class`
+  - `device`
+  - `dtype`
+  - `load_seconds`
+  - `peak_mem_gb`
+  - `image_path`
+  - `question`
+  - `ground_truth_answer`
+- 其余只保留 PRM 逐步打分结果
 
-### 已验证成功的参考输出
+### 4 个可直接运行的 PRM 案例
 
-我在当前机器上实际跑通时，输出核心字段如下：
+下面 4 组命令都已经在当前机器上实际跑通。为了让文档聚焦 PRM 本身，下面的“运行输出结果”保留脚本最终打印的 JSON，省略了 `transformers` warning 和 checkpoint shard 进度条。`load_seconds` 会随着机器负载略有波动。
+
+如果你的机器只有 1 张可用 GPU，把下面命令里的 `CUDA_VISIBLE_DEVICES=0/1/2/3` 统一替换成同一张空闲卡即可。
+
+### 8.1 每一步完全正确
+
+运行命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --response "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It explicitly labels Stage 2 as Math SFT. Step 3: It explicitly labels Stage 3 as PRM Training and Verifying. Step 4: Only three numbered stages appear in the figure. †Answer: 3"
+```
+
+运行输出结果：
 
 ```json
 {
   "model_class": "UrsaForTokenClassification",
   "device": "cuda:0",
   "dtype": "torch.bfloat16",
-  "load_seconds": 16.8,
+  "load_seconds": 24.5,
   "peak_mem_gb": 16.24,
-  "paper_hyperparameters": {
-    "rho": 0.3,
-    "gamma": 0.5
-  },
-  "group_size": 4,
-  "bon_by_mean_process_reward": {
-    "selected_rollout_id": 0,
-    "selected_avg_process_reward": 0.954427,
-    "selected_answer": "3"
-  },
-  "group_statistics": {
-    "avg_process_reward_mean": 0.785644,
-    "outcome_reward_mean": 0.75,
-    "ps_grpo_reward_mean": 0.625
-  }
+  "image_path": "/home/ubuntu/URSA-MATH/figures/framework.png",
+  "question": "How many numbered training stages are shown in this diagram?",
+  "ground_truth_answer": "3",
+  "responses": [
+    {
+      "response_id": 0,
+      "response": "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It explicitly labels Stage 2 as Math SFT. Step 3: It explicitly labels Stage 3 as PRM Training and Verifying. Step 4: Only three numbered stages appear in the figure. †Answer: 3",
+      "prepared_input": "You are given a problem and a step-by-step solution. You need to check the correctness of each step.\nQuestion:How many numbered training stages are shown in this diagram?\nStep 1: The figure explicitly labels Stage 1 as VL Alignment. и Step 2: It explicitly labels Stage 2 as Math SFT. и Step 3: It explicitly labels Stage 3 as PRM Training and Verifying. и Step 4: Only three numbered stages appear in the figure. и †Answer: 3",
+      "step_count_in_text": 4,
+      "scored_step_count": 4,
+      "step_reward_alignment_ok": true,
+      "steps": [
+        {
+          "step_index": 1,
+          "step_text": "Step 1: The figure explicitly labels Stage 1 as VL Alignment.",
+          "prm_score": 0.984375
+        },
+        {
+          "step_index": 2,
+          "step_text": "Step 2: It explicitly labels Stage 2 as Math SFT.",
+          "prm_score": 0.976562
+        },
+        {
+          "step_index": 3,
+          "step_text": "Step 3: It explicitly labels Stage 3 as PRM Training and Verifying.",
+          "prm_score": 0.902344
+        },
+        {
+          "step_index": 4,
+          "step_text": "Step 4: Only three numbered stages appear in the figure.",
+          "prm_score": 0.671875
+        }
+      ],
+      "min_prm_score": 0.671875,
+      "avg_prm_score": 0.883789
+    }
+  ]
 }
 ```
 
-### 自定义参数
+### 8.2 前面几步正确，后半段错误
 
-如果你只想打一条自定义答案：
-
-```bash
-python examples/run_ursa_rm_8b_score_example.py \
-  --device cuda:0 \
-  --model-path ./checkpoints/URSA-RM-8B \
-  --image-path ./figures/framework.png \
-  --question "How many numbered training stages are shown in this diagram?" \
-  --ground-truth-answer 3 \
-  --response "Step 1: The figure labels Stage 1, Stage 2, and Stage 3. †Answer: 3"
-```
-
-如果你想模拟论文里的一个 rollout group，可以重复传 `--response`：
+运行命令：
 
 ```bash
-python examples/run_ursa_rm_8b_score_example.py \
+CUDA_VISIBLE_DEVICES=1 python examples/run_ursa_rm_8b_score_example.py \
   --device cuda:0 \
-  --ground-truth-answer 3 \
-  --rho 0.3 \
-  --gamma 0.5 \
-  --response "Step 1: The diagram labels Stage 1, Stage 2, and Stage 3. †Answer: 3" \
-  --response "Step 1: The top row has two numbered stages. Step 2: The lower-left block is Stage 3. †Answer: 3" \
-  --response "Step 1: There are four big regions, so there are four stages. †Answer: 4"
+  --response "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It also labels Stage 2 as Math SFT. Step 3: After that, I will incorrectly assume the lower-left block is not a stage and that there is a hidden Stage 4 elsewhere. Step 4: Based on that wrong reading, I conclude there are four numbered stages. †Answer: 4"
 ```
 
-如果 rollout 比较多，建议放到 JSON 文件里：
+运行输出结果：
 
 ```json
-[
-  {"response": "Step 1: ... †Answer: 3"},
-  {"response": "Step 1: ... †Answer: 4", "outcome_reward": 0}
-]
+{
+  "model_class": "UrsaForTokenClassification",
+  "device": "cuda:0",
+  "dtype": "torch.bfloat16",
+  "load_seconds": 25.82,
+  "peak_mem_gb": 16.24,
+  "image_path": "/home/ubuntu/URSA-MATH/figures/framework.png",
+  "question": "How many numbered training stages are shown in this diagram?",
+  "ground_truth_answer": "3",
+  "responses": [
+    {
+      "response_id": 0,
+      "response": "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It also labels Stage 2 as Math SFT. Step 3: After that, I will incorrectly assume the lower-left block is not a stage and that there is a hidden Stage 4 elsewhere. Step 4: Based on that wrong reading, I conclude there are four numbered stages. †Answer: 4",
+      "prepared_input": "You are given a problem and a step-by-step solution. You need to check the correctness of each step.\nQuestion:How many numbered training stages are shown in this diagram?\nStep 1: The figure explicitly labels Stage 1 as VL Alignment. и Step 2: It also labels Stage 2 as Math SFT. и Step 3: After that, I will incorrectly assume the lower-left block is not a stage and that there is a hidden Stage 4 elsewhere. и Step 4: Based on that wrong reading, I conclude there are four numbered stages. и †Answer: 4",
+      "step_count_in_text": 4,
+      "scored_step_count": 4,
+      "step_reward_alignment_ok": true,
+      "steps": [
+        {
+          "step_index": 1,
+          "step_text": "Step 1: The figure explicitly labels Stage 1 as VL Alignment.",
+          "prm_score": 0.984375
+        },
+        {
+          "step_index": 2,
+          "step_text": "Step 2: It also labels Stage 2 as Math SFT.",
+          "prm_score": 0.96875
+        },
+        {
+          "step_index": 3,
+          "step_text": "Step 3: After that, I will incorrectly assume the lower-left block is not a stage and that there is a hidden Stage 4 elsewhere.",
+          "prm_score": 0.863281
+        },
+        {
+          "step_index": 4,
+          "step_text": "Step 4: Based on that wrong reading, I conclude there are four numbered stages.",
+          "prm_score": 0.316406
+        }
+      ],
+      "min_prm_score": 0.316406,
+      "avg_prm_score": 0.783203
+    }
+  ]
+}
 ```
 
-然后执行：
+### 8.3 前面几步正确，中间几步明显错误，但最终结果偏偏正确
+
+运行命令：
 
 ```bash
-python examples/run_ursa_rm_8b_score_example.py \
+CUDA_VISIBLE_DEVICES=2 python examples/run_ursa_rm_8b_score_example.py \
   --device cuda:0 \
-  --responses-file ./your_rollouts.json \
-  --ground-truth-answer 3
+  --response "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It also labels Stage 2 as Math SFT. Step 3: I now make a wrong detour and claim the lower-left Stage 3 block should be ignored because it is only evaluation. Step 4: I also wrongly claim the right-bottom inference-time scaling panel is Stage 4. Step 5: Rechecking the labels, only Stage 1, Stage 2, and Stage 3 are numbered training stages. †Answer: 3"
 ```
+
+运行输出结果：
+
+```json
+{
+  "model_class": "UrsaForTokenClassification",
+  "device": "cuda:0",
+  "dtype": "torch.bfloat16",
+  "load_seconds": 24.87,
+  "peak_mem_gb": 16.24,
+  "image_path": "/home/ubuntu/URSA-MATH/figures/framework.png",
+  "question": "How many numbered training stages are shown in this diagram?",
+  "ground_truth_answer": "3",
+  "responses": [
+    {
+      "response_id": 0,
+      "response": "Step 1: The figure explicitly labels Stage 1 as VL Alignment. Step 2: It also labels Stage 2 as Math SFT. Step 3: I now make a wrong detour and claim the lower-left Stage 3 block should be ignored because it is only evaluation. Step 4: I also wrongly claim the right-bottom inference-time scaling panel is Stage 4. Step 5: Rechecking the labels, only Stage 1, Stage 2, and Stage 3 are numbered training stages. †Answer: 3",
+      "prepared_input": "You are given a problem and a step-by-step solution. You need to check the correctness of each step.\nQuestion:How many numbered training stages are shown in this diagram?\nStep 1: The figure explicitly labels Stage 1 as VL Alignment. и Step 2: It also labels Stage 2 as Math SFT. и Step 3: I now make a wrong detour and claim the lower-left Stage 3 block should be ignored because it is only evaluation. и Step 4: I also wrongly claim the right-bottom inference-time scaling panel is Stage 4. и Step 5: Rechecking the labels, only Stage 1, Stage 2, and Stage 3 are numbered training stages. и †Answer: 3",
+      "step_count_in_text": 5,
+      "scored_step_count": 5,
+      "step_reward_alignment_ok": true,
+      "steps": [
+        {
+          "step_index": 1,
+          "step_text": "Step 1: The figure explicitly labels Stage 1 as VL Alignment.",
+          "prm_score": 0.984375
+        },
+        {
+          "step_index": 2,
+          "step_text": "Step 2: It also labels Stage 2 as Math SFT.",
+          "prm_score": 0.96875
+        },
+        {
+          "step_index": 3,
+          "step_text": "Step 3: I now make a wrong detour and claim the lower-left Stage 3 block should be ignored because it is only evaluation.",
+          "prm_score": 0.90625
+        },
+        {
+          "step_index": 4,
+          "step_text": "Step 4: I also wrongly claim the right-bottom inference-time scaling panel is Stage 4.",
+          "prm_score": 0.773438
+        },
+        {
+          "step_index": 5,
+          "step_text": "Step 5: Rechecking the labels, only Stage 1, Stage 2, and Stage 3 are numbered training stages.",
+          "prm_score": 0.269531
+        }
+      ],
+      "min_prm_score": 0.269531,
+      "avg_prm_score": 0.780469
+    }
+  ]
+}
+```
+
+### 8.4 完全错误
+
+运行命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --response "Step 1: The diagram has nothing to do with numbered stages. Step 2: I will say it shows five numbered training stages without using the labels. Step 3: Therefore the answer is 5. †Answer: 5"
+```
+
+运行输出结果：
+
+```json
+{
+  "model_class": "UrsaForTokenClassification",
+  "device": "cuda:0",
+  "dtype": "torch.bfloat16",
+  "load_seconds": 26.69,
+  "peak_mem_gb": 16.24,
+  "image_path": "/home/ubuntu/URSA-MATH/figures/framework.png",
+  "question": "How many numbered training stages are shown in this diagram?",
+  "ground_truth_answer": "3",
+  "responses": [
+    {
+      "response_id": 0,
+      "response": "Step 1: The diagram has nothing to do with numbered stages. Step 2: I will say it shows five numbered training stages without using the labels. Step 3: Therefore the answer is 5. †Answer: 5",
+      "prepared_input": "You are given a problem and a step-by-step solution. You need to check the correctness of each step.\nQuestion:How many numbered training stages are shown in this diagram?\nStep 1: The diagram has nothing to do with numbered stages. и Step 2: I will say it shows five numbered training stages without using the labels. и Step 3: Therefore the answer is 5. и †Answer: 5",
+      "step_count_in_text": 3,
+      "scored_step_count": 3,
+      "step_reward_alignment_ok": true,
+      "steps": [
+        {
+          "step_index": 1,
+          "step_text": "Step 1: The diagram has nothing to do with numbered stages.",
+          "prm_score": 0.679688
+        },
+        {
+          "step_index": 2,
+          "step_text": "Step 2: I will say it shows five numbered training stages without using the labels.",
+          "prm_score": 0.664062
+        },
+        {
+          "step_index": 3,
+          "step_text": "Step 3: Therefore the answer is 5.",
+          "prm_score": 0.306641
+        }
+      ],
+      "min_prm_score": 0.306641,
+      "avg_prm_score": 0.55013
+    }
+  ]
+}
+```
+
+### 8.5 上面 4 个图文案例的逐 step 事实判断表
+
+下面这些“事实判断”是按题目和图片内容手工核对后的结果，不是模型输出字段。
+
+#### 8.5.1 每一步完全正确
+
+| Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | ---: | --- |
+| 1 | Figure labels Stage 1 as VL Alignment | 正确 | 0.984375 | - |
+| 2 | Figure labels Stage 2 as Math SFT | 正确 | 0.976562 | - |
+| 3 | Figure labels Stage 3 as PRM Training and Verifying | 正确 | 0.902344 | - |
+| 4 | Only three numbered stages appear in the figure | 正确 | 0.671875 | - |
+
+#### 8.5.2 前面几步正确，后半段错误
+
+| Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | ---: | --- |
+| 1 | Figure labels Stage 1 as VL Alignment | 正确 | 0.984375 | - |
+| 2 | Figure labels Stage 2 as Math SFT | 正确 | 0.968750 | - |
+| 3 | Lower-left block is not a stage, and there is a hidden Stage 4 | 错误 | 0.863281 | 这一整步包含两个错误判断 |
+| 4 | Therefore there are four numbered stages | 错误 | 0.316406 | - |
+
+#### 8.5.3 前面几步正确，中间几步明显错误，但最终结果偏偏正确
+
+| Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | ---: | --- |
+| 1 | Figure labels Stage 1 as VL Alignment | 正确 | 0.984375 | - |
+| 2 | Figure labels Stage 2 as Math SFT | 正确 | 0.968750 | - |
+| 3 | Lower-left Stage 3 should be ignored because it is only evaluation | 错误 | 0.906250 | Stage 3 明确是 `PRM Training and Verifying` |
+| 4 | Right-bottom inference-time scaling panel is Stage 4 | 错误 | 0.773438 | 图里没有 `Stage 4` 标签 |
+| 5 | Rechecking labels, only Stage 1, 2, 3 are numbered training stages | 正确 | 0.269531 | 正确修正，但分数反而最低 |
+
+#### 8.5.4 完全错误
+
+| Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | ---: | --- |
+| 1 | Diagram has nothing to do with numbered stages | 错误 | 0.679688 | 图里明确有 Stage 1/2/3 |
+| 2 | It shows five numbered training stages | 错误 | 0.664062 | 图里并没有五个编号 stage |
+| 3 | Therefore the answer is 5 | 错误 | 0.306641 | - |
+
+### 8.6 纯文字数学题实验：图片无关时 RM 的表现
+
+这次实验不修改任何代码，直接使用 [examples/run_ursa_rm_8b_score_example.py](/home/ubuntu/URSA-MATH/examples/run_ursa_rm_8b_score_example.py)。
+
+实验设置：
+
+- 继续传入 `figures/framework.png`
+- 图片与题目无关
+- 数学题内容完全放在 `--question` 和 `--response` 文本里
+- 没有额外改 `--ground-truth-answer`，因为当前脚本只是把这个字段原样打印出来，PRM 打分本身不依赖它
+
+实际运行命令如下。
+
+纯文字问题 A：
+
+```bash
+CUDA_VISIBLE_DEVICES=5 python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --question "Compute 37 × 24." \
+  --response "Step 1: Rewrite 37 × 24 as 37 × (20 + 4). Step 2: Compute the partial products: 37 × 20 = 740 and 37 × 4 = 148. Step 3: Add them to get 740 + 148 = 888. †Answer: 888" \
+  --response "Step 1: Rewrite 37 × 24 as 37 × (20 + 4). Step 2: Compute the partial products: 37 × 20 = 740 and 37 × 4 = 148. Step 3: Add them to get 740 + 148 = 948. †Answer: 948" \
+  --response "Step 1: Rewrite 37 × 24 as 37 × (20 + 4). Step 2: Compute the partial products: 37 × 20 = 740 and 37 × 4 = 128. Step 3: Therefore the total is 740 + 128 = 868. †Answer: 868"
+```
+
+纯文字问题 B：
+
+```bash
+CUDA_VISIBLE_DEVICES=6 python examples/run_ursa_rm_8b_score_example.py \
+  --device cuda:0 \
+  --question "Solve 2x + 3 = 11 for x." \
+  --response "Step 1: Subtract 3 from both sides to get 2x = 8. Step 2: Divide both sides by 2 to get x = 4. †Answer: 4" \
+  --response "Step 1: Subtract 3 from both sides to get 2x = 8. Step 2: Divide both sides by 2 to get x = 5. †Answer: 5" \
+  --response "Step 1: Subtract 3 from both sides to get 2x = 9. Step 2: Divide both sides by 2 to get x = 4.5. †Answer: 4.5"
+```
+
+实验结论：
+
+- 这个 example 可以对纯文字数学题正常逐 step 打分，说明它并不强依赖图片内容和图文对应关系才能运行。
+- 它对一部分“非常直接”的错误是能发现的，例如 `2x = 8` 后写成 `x = 5`，分数会明显下降。
+- 但它对纯文字算术题并不稳定，例如 `740 + 148 = 948` 这种明显错误，这次实验里反而比正确的 `740 + 148 = 888` 得分更高。
+- 因此，当前 `rm_8b` example 可以拿来探索 text-only 行为，但不能把它当成一个稳定可靠的纯文字数学过程监督器。
+
+#### 8.6.1 纯文字问题 A：`Compute 37 × 24.`
+
+| Response | Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | --- | ---: | --- |
+| R0（全对） | 1 | `37 × 24 = 37 × (20 + 4)` | 正确 | 0.906250 | - |
+| R0（全对） | 2 | `37 × 20 = 740` 且 `37 × 4 = 148` | 正确 | 0.902344 | - |
+| R0（全对） | 3 | `740 + 148 = 888` | 正确 | 0.445312 | - |
+| R1（只最后一步错） | 1 | `37 × 24 = 37 × (20 + 4)` | 正确 | 0.906250 | - |
+| R1（只最后一步错） | 2 | `37 × 20 = 740` 且 `37 × 4 = 148` | 正确 | 0.902344 | - |
+| R1（只最后一步错） | 3 | `740 + 148 = 948` | 错误 | 0.675781 | 明显错误，但这次得分高于正确答案 |
+| R2（中间算错并传递到最后） | 1 | `37 × 24 = 37 × (20 + 4)` | 正确 | 0.906250 | - |
+| R2（中间算错并传递到最后） | 2 | `37 × 20 = 740` 且 `37 × 4 = 128` | 错误 | 0.894531 | `37 × 4` 实际应为 `148` |
+| R2（中间算错并传递到最后） | 3 | `740 + 128 = 868`，因此总结果为 `868` | 错误 | 0.511719 | 相加本身对，但对原题结论错误 |
+
+这组实验最值得注意的一点是：正确的最后一步 `740 + 148 = 888` 分数是 `0.445312`，而错误的最后一步 `740 + 148 = 948` 分数是 `0.675781`。这说明它对 text-only 算术错误并不稳定。
+
+#### 8.6.2 纯文字问题 B：`Solve 2x + 3 = 11 for x.`
+
+| Response | Step | 内容摘要 | 事实判断 | PRM 分数 | 备注 |
+| --- | --- | --- | --- | ---: | --- |
+| R0（全对） | 1 | `2x + 3 = 11` 两边减 3，得到 `2x = 8` | 正确 | 0.859375 | - |
+| R0（全对） | 2 | `2x = 8` 两边除以 2，得到 `x = 4` | 正确 | 0.773438 | - |
+| R1（只最后一步错） | 1 | `2x + 3 = 11` 两边减 3，得到 `2x = 8` | 正确 | 0.859375 | - |
+| R1（只最后一步错） | 2 | `2x = 8` 两边除以 2，得到 `x = 5` | 错误 | 0.283203 | 明显错误，被显著压低 |
+| R2（第一步就错） | 1 | `2x + 3 = 11` 两边减 3，得到 `2x = 9` | 错误 | 0.585938 | - |
+| R2（第一步就错） | 2 | `2x = 9` 两边除以 2，得到 `x = 4.5` | 错误 | 0.131836 | 这一步在错误前提下局部运算对，但对原题链路仍错误 |
+
+这组实验说明：当错误写得足够“局部、清楚、直接”时，这个 RM 的 step 分数会明显下降；例如把 `x = 4` 写成 `x = 5` 时，分数从 `0.773438` 下降到了 `0.283203`。
 
 ## 9. Standalone 示例
 
@@ -367,16 +645,16 @@ CUDA_VISIBLE_DEVICES=2 python examples/run_ursa_8b_torch_example_standalone.py -
 ### 9.2 URSA-RM-8B standalone 运行命令
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 python examples/run_ursa_rm_8b_score_example_standalone.py --device cuda:0
+CUDA_VISIBLE_DEVICES=4 python examples/run_ursa_rm_8b_score_example_standalone.py --device cuda:0
 ```
 
-这个 standalone 版本和普通版输出同一套 JSON schema，也包含：
+这个 standalone 版本和普通版输出同一套精简后的 PRM-only JSON schema，主要字段包括：
 
-- `step_scores`
-- `process_reward_sequence`
-- `bon_by_mean_process_reward`
-- `drop_moment`
-- `paper_metrics` 里的 vanilla GRPO / Variant 1 / Variant 2 / PS-GRPO 字段
+- `responses[].prepared_input`
+- `responses[].steps[].prm_score`
+- `responses[].min_prm_score`
+- `responses[].avg_prm_score`
+- `responses[].step_reward_alignment_ok`
 
 已验证成功的参考输出核心字段：
 
@@ -385,14 +663,21 @@ CUDA_VISIBLE_DEVICES=3 python examples/run_ursa_rm_8b_score_example_standalone.p
   "model_class": "UrsaForTokenClassification",
   "device": "cuda:0",
   "dtype": "torch.bfloat16",
-  "load_seconds": 15.82,
+  "load_seconds": 11.62,
   "peak_mem_gb": 16.24,
-  "group_size": 4,
-  "bon_by_mean_process_reward": {
-    "selected_rollout_id": 0,
-    "selected_avg_process_reward": 0.954427,
-    "selected_answer": "3"
-  }
+  "image_path": "/home/ubuntu/URSA-MATH/figures/framework.png",
+  "question": "How many numbered training stages are shown in this diagram?",
+  "ground_truth_answer": "3",
+  "responses": [
+    {
+      "response_id": 0,
+      "step_count_in_text": 3,
+      "scored_step_count": 3,
+      "step_reward_alignment_ok": true,
+      "min_prm_score": 0.914062,
+      "avg_prm_score": 0.954427
+    }
+  ]
 }
 ```
 
