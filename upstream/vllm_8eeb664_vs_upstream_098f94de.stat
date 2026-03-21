@@ -1,0 +1,37 @@
+ .../.readthedocs.yaml                              |    2 +-
+ .../local_8eeb664/attrdict/__init__.py}            |   10 +
+ .../local_8eeb664/attrdict/default.py}             |  130 +
+ .../local_8eeb664/attrdict/dictionary.py}          |   60 +
+ .../local_8eeb664/attrdict/mapping.py}             |   97 +
+ .../local_8eeb664/attrdict/merge.py}               |   44 +
+ .../local_8eeb664/attrdict/mixins.py}              |  209 ++
+ .../vllm/engine/llm_engine.py                      |    1 -
+ .../vllm/entrypoints/chat_utils.py                 |    2 +
+ .../vllm/inputs/registry.py                        |    1 -
+ .../layers/fused_moe/configs/README => dev/null}   |   10 -
+ .../vllm/model_executor/models/deepseek_vl.py}     | 2368 ++++++++++++++++++
+ .../vllm/model_executor/models/registry.py         |    2 +-
+ .../vllm/model_executor/models/ursa.py}            | 2618 ++++++++++++++++++++
+ .../vllm/transformers_utils/config.py              |    3 +-
+ .../vllm/transformers_utils/configs/__init__.py    |    4 +
+ .../transformers_utils/configs/deepseek_vl.py}     |   83 +
+ .../vllm/transformers_utils/configs/ursa.py}       |  120 +
+ .../vllm/v1/tokenizer/__init__.py => dev/null}     |    0
+ .../vllm/v1/tokenizer/detokenizer.py => dev/null}  |  215 --
+ .../vllm/vllm_flash_attn/.gitkeep => dev/null}     |    0
+ .../vllm/worker/model_runner.py                    |    5 +
+ 22 files changed, 5754 insertions(+), 230 deletions(-)
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/__init__.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/default.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/dictionary.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/mapping.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/merge.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/attrdict/mixins.py
+ delete mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/upstream_098f94de/vllm/model_executor/layers/fused_moe/configs/README
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/vllm/model_executor/models/deepseek_vl.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/vllm/model_executor/models/ursa.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/vllm/transformers_utils/configs/deepseek_vl.py
+ create mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/local_8eeb664/vllm/transformers_utils/configs/ursa.py
+ delete mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/upstream_098f94de/vllm/v1/tokenizer/__init__.py
+ delete mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/upstream_098f94de/vllm/v1/tokenizer/detokenizer.py
+ delete mode 100644 /home/ubuntu/URSA-MATH/tmp/vllm_origin_analysis/upstream_098f94de/vllm/vllm_flash_attn/.gitkeep

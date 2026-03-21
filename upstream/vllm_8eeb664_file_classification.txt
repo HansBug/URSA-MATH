@@ -1,0 +1,32 @@
+base_commit: 098f94de42859f8251fe920f87adb88336129c53
+base_commit_date: 2024-11-06T14:31:01+00:00
+local_commit: 8eeb664493608516abbf491f1b020b48b7bda013
+local_commit_date: 2025-01-22T13:30:32+00:00
+
+[changed_files]
+.readthedocs.yaml
+vllm/engine/llm_engine.py
+vllm/entrypoints/chat_utils.py
+vllm/inputs/registry.py
+vllm/model_executor/models/registry.py
+vllm/transformers_utils/config.py
+vllm/transformers_utils/configs/__init__.py
+vllm/worker/model_runner.py
+
+[local_only_files]
+attrdict/__init__.py
+attrdict/default.py
+attrdict/dictionary.py
+attrdict/mapping.py
+attrdict/merge.py
+attrdict/mixins.py
+vllm/model_executor/models/deepseek_vl.py
+vllm/model_executor/models/ursa.py
+vllm/transformers_utils/configs/deepseek_vl.py
+vllm/transformers_utils/configs/ursa.py
+
+[upstream_only_files]
+vllm/model_executor/layers/fused_moe/configs/README
+vllm/v1/tokenizer/__init__.py
+vllm/v1/tokenizer/detokenizer.py
+vllm/vllm_flash_attn/.gitkeep
